@@ -2658,5 +2658,7 @@ int sysctl_bpf_stats_enabled __read_mostly;
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(xdp_exception);
 
+#ifdef CONFIG_BPF_SYSCALL
 EXPORT_TRACEPOINT_SYMBOL_GPL(bpf_prog_get_type);
 EXPORT_TRACEPOINT_SYMBOL_GPL(bpf_prog_put_rcu);
+#endif

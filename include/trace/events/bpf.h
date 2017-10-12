@@ -4,6 +4,9 @@
 #if !defined(_TRACE_BPF_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_BPF_H
 
+/* These events are used only by BPF syscall code. */
+#ifdef CONFIG_BPF_SYSCALL
+
 #include <linux/filter.h>
 #include <linux/bpf.h>
 #include <linux/fs.h>
@@ -346,6 +349,7 @@ TRACE_EVENT(bpf_map_next_key,
 		  __entry->key_trunc ? " ..." : "")
 );
 
+#endif /* CONFIG_BPF_SYSCALL */
 #endif /* _TRACE_BPF_H */
 
 #include <trace/define_trace.h>
