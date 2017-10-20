@@ -39,7 +39,7 @@
  * nv_cong_dec_mult	Decrease cwnd by X% (30%) of congestion when detected
  * nv_ssthresh_factor	On congestion set ssthresh to this * <desired cwnd> / 8
  * nv_rtt_factor	RTT averaging factor
- * nv_loss_dec_factor	Decrease cwnd by this (50%) when losses occur
+ * nv_loss_dec_factor	Decrease cwnd to this (80%) when losses occur
  * nv_dec_eval_min_calls	Wait this many RTT measurements before dec cwnd
  * nv_inc_eval_min_calls	Wait this many RTT measurements before inc cwnd
  * nv_ssthresh_eval_min_calls	Wait this many RTT measurements before stopping
@@ -61,7 +61,7 @@ static int nv_min_cwnd __read_mostly = 2;
 static int nv_cong_dec_mult __read_mostly = 30 * 128 / 100; /* = 30% */
 static int nv_ssthresh_factor __read_mostly = 8; /* = 1 */
 static int nv_rtt_factor __read_mostly = 128; /* = 1/2*old + 1/2*new */
-static int nv_loss_dec_factor __read_mostly = 512; /* => 50% */
+static int nv_loss_dec_factor __read_mostly = 819; /* => 80% */
 static int nv_cwnd_growth_rate_neg __read_mostly = 8;
 static int nv_cwnd_growth_rate_pos __read_mostly; /* 0 => fixed like Reno */
 static int nv_dec_eval_min_calls __read_mostly = 60;
@@ -102,6 +102,8 @@ struct tcpnv {
 	u32 nv_last_rtt;	/* last rtt */
 	u32 nv_min_rtt;		/* active min rtt. Used to determine slope */
 	u32 nv_min_rtt_new;	/* min rtt for future use */
+	u32 nv_base_rtt;	/* congestion threshold supplied by BPF */
+	u32 nv_lower_bound_rtt; /* 80% of nv_base_rtt */
 	u32 nv_rtt_max_rate;	/* max rate seen during current RTT */
 	u32 nv_rtt_start_seq;	/* current RTT ends when packet arrives
 				 * acking beyond nv_rtt_start_seq */
@@ -134,8 +136,19 @@ static inline void tcpnv_reset(struct tcpnv *ca, struct sock *sk)
 static void tcpnv_init(struct sock *sk)
 {
 	struct tcpnv *ca = inet_csk_ca(sk);
+	int base_rtt;
 
 	tcpnv_reset(ca, sk);
+
+	/* Ask a socket-ops program for a path-specific congestion threshold. */
+	base_rtt = tcp_call_bpf(sk, BPF_SOCK_OPS_BASE_RTT, 0, NULL);
+	if (base_rtt > 0) {
+		ca->nv_base_rtt = base_rtt;
+		ca->nv_lower_bound_rtt = (base_rtt * 205) >> 8;
+	} else {
+		ca->nv_base_rtt = 0;
+		ca->nv_lower_bound_rtt = 0;
+	}
 
 	ca->nv_allow_cwnd_growth = 1;
 	ca->nv_min_rtt_reset_jiffies = jiffies + 2 * HZ;
@@ -144,6 +157,15 @@ static void tcpnv_init(struct sock *sk)
 	ca->nv_min_cwnd = NV_MIN_CWND;
 	ca->nv_catchup = 0;
 	ca->cwnd_growth_factor = 0;
+}
+
+static inline u32 nv_get_bounded_rtt(const struct tcpnv *ca, u32 val)
+{
+	if (ca->nv_lower_bound_rtt && val < ca->nv_lower_bound_rtt)
+		return ca->nv_lower_bound_rtt;
+	if (ca->nv_base_rtt && val > ca->nv_base_rtt)
+		return ca->nv_base_rtt;
+	return val;
 }
 
 static void tcpnv_cong_avoid(struct sock *sk, u32 ack, u32 acked)
@@ -275,6 +297,9 @@ static void tcpnv_acked(struct sock *sk, const struct ack_sample *sample)
 	/* We have valid information, increment counter */
 	if (ca->nv_eval_call_cnt < 255)
 		ca->nv_eval_call_cnt++;
+
+	/* Apply the BPF-provided bounds only to minimum-RTT tracking. */
+	avg_rtt = nv_get_bounded_rtt(ca, avg_rtt);
 
 	/* update min rtt if necessary */
 	if (avg_rtt < ca->nv_min_rtt)
