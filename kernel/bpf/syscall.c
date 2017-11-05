@@ -2492,6 +2492,7 @@ static int bpf_prog_query(const union bpf_attr *attr,
 	case BPF_CGROUP_UDP4_RECVMSG:
 	case BPF_CGROUP_UDP6_RECVMSG:
 	case BPF_CGROUP_SOCK_OPS:
+	case BPF_CGROUP_DEVICE:
 	case BPF_CGROUP_SYSCTL:
 	case BPF_CGROUP_GETSOCKOPT:
 	case BPF_CGROUP_SETSOCKOPT:
