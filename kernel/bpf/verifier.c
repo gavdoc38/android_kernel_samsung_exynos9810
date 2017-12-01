@@ -1341,6 +1341,11 @@ static int check_stack_read(struct bpf_verifier_env *env,
 		if (value_regno >= 0) {
 			/* restore register state from stack */
 			state->regs[value_regno] = reg_state->stack[spi].spilled_ptr;
+			/* mark reg as written since spilled pointer state likely
+			 * has its liveness marks cleared by is_state_visited()
+			 * which resets stack/reg liveness for state transitions
+			 */
+			state->regs[value_regno].live |= REG_LIVE_WRITTEN;
 			mark_stack_slot_read(env, vstate, vstate->parent, spi,
 					     reg_state->frameno);
 		}
