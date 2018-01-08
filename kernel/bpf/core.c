@@ -531,6 +531,20 @@ int bpf_remove_insns(struct bpf_prog *prog, u32 off, u32 cnt)
 	return err;
 }
 
+void bpf_prog_kallsyms_del_subprogs(struct bpf_prog *fp)
+{
+	int i;
+
+	for (i = 0; i < fp->aux->func_cnt; i++)
+		bpf_prog_kallsyms_del(fp->aux->func[i]);
+}
+
+void bpf_prog_kallsyms_del_all(struct bpf_prog *fp)
+{
+	bpf_prog_kallsyms_del_subprogs(fp);
+	bpf_prog_kallsyms_del(fp);
+}
+
 #ifdef CONFIG_BPF_JIT
 /* All BPF JIT sysctl knobs here. */
 int bpf_jit_enable   __read_mostly = IS_BUILTIN(CONFIG_BPF_JIT_ALWAYS_ON);

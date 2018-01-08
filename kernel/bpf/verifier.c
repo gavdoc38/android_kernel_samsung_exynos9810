@@ -780,6 +780,8 @@ static int transfer_reference_state(struct bpf_func_state *dst,
 
 static void free_func_state(struct bpf_func_state *state)
 {
+	if (!state)
+		return;
 	kfree(state->refs);
 	kfree(state->stack);
 	kfree(state);
@@ -957,6 +959,8 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	}
 	return &elem->st;
 err:
+	free_verifier_state(env->cur_state, true);
+	env->cur_state = NULL;
 	/* pop all elements and return */
 	while (!pop_stack(env, NULL, NULL));
 	return NULL;

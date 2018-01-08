@@ -30,6 +30,7 @@
 #include <linux/cred.h>
 #include <linux/timekeeping.h>
 #include <linux/ctype.h>
+#include <linux/nospec.h>
 #include <uapi/linux/btf.h>
 #include <linux/btf.h>
 #include <linux/poll.h>
@@ -133,12 +134,14 @@ static u32 bpf_map_value_size(struct bpf_map *map)
 static struct bpf_map *find_and_alloc_map(union bpf_attr *attr)
 {
 	const struct bpf_map_ops *ops;
+	u32 type = attr->map_type;
 	struct bpf_map *map;
 	int err;
 
-	if (attr->map_type >= ARRAY_SIZE(bpf_map_types))
+	if (type >= ARRAY_SIZE(bpf_map_types))
 		return ERR_PTR(-EINVAL);
-	ops = bpf_map_types[attr->map_type];
+	type = array_index_nospec(type, ARRAY_SIZE(bpf_map_types));
+	ops = bpf_map_types[type];
 	if (!ops)
 		return ERR_PTR(-EINVAL);
 
@@ -153,7 +156,7 @@ static struct bpf_map *find_and_alloc_map(union bpf_attr *attr)
 	if (IS_ERR(map))
 		return map;
 	map->ops = ops;
-	map->map_type = attr->map_type;
+	map->map_type = type;
 	return map;
 }
 
@@ -1770,7 +1773,7 @@ static void bpf_prog_put_deferred(struct work_struct *work)
 	prog = aux->prog;
 
 	trace_bpf_prog_put_rcu(prog);
-	bpf_prog_kallsyms_del(prog);
+	bpf_prog_kallsyms_del_all(prog);
 	btf_put(aux->btf);
 	if (aux->attach_btf)
 		btf_put(aux->attach_btf);
@@ -2262,6 +2265,10 @@ static int bpf_prog_load(union bpf_attr *attr, bpfptr_t uattr)
 	return err;
 
 free_used_maps:
+	bpf_prog_kallsyms_del_subprogs(prog);
+	btf_put(prog->aux->btf);
+	kvfree(prog->aux->func_info);
+	kfree(prog->aux->func_info_aux);
 	bpf_prog_free_linfo(prog);
 	free_used_maps(prog->aux);
 free_prog:
