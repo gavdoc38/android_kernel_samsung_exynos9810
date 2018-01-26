@@ -11573,6 +11573,13 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 next_insn:
 			insn++;
 			i++;
+			continue;
+		}
+
+		/* Basic sanity check before we invest more work here. */
+		if (!bpf_opcode_in_insntable(insn->code)) {
+			verbose(env, "unknown opcode %02x\n", insn->code);
+			return -EINVAL;
 		}
 	}
 
