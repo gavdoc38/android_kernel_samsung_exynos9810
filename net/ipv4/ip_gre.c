@@ -376,6 +376,7 @@ static struct rtable *gre_get_rt(struct sk_buff *skb,
 static void gre_fb_xmit(struct sk_buff *skb, struct net_device *dev,
 			__be16 proto)
 {
+	struct ip_tunnel *tunnel = netdev_priv(dev);
 	struct ip_tunnel_info *tun_info;
 	const struct ip_tunnel_key *key;
 	struct rtable *rt = NULL;
@@ -422,9 +423,11 @@ static void gre_fb_xmit(struct sk_buff *skb, struct net_device *dev,
 	if (gre_handle_offloads(skb, !!(tun_info->key.tun_flags & TUNNEL_CSUM)))
 		goto err_free_rt;
 
-	flags = tun_info->key.tun_flags & (TUNNEL_CSUM | TUNNEL_KEY);
+	flags = tun_info->key.tun_flags &
+		(TUNNEL_CSUM | TUNNEL_KEY | TUNNEL_SEQ);
 	gre_build_header(skb, tunnel_hlen, flags, proto,
-			 tunnel_id_to_key32(tun_info->key.tun_id), 0);
+			 tunnel_id_to_key32(tun_info->key.tun_id),
+			 (flags & TUNNEL_SEQ) ? htonl(tunnel->o_seqno++) : 0);
 
 	df = key->tun_flags & TUNNEL_DONT_FRAGMENT ?  htons(IP_DF) : 0;
 
@@ -943,7 +946,6 @@ static const struct net_device_ops gre_tap_netdev_ops = {
 static void ipgre_tap_setup(struct net_device *dev)
 {
 	ether_setup(dev);
-	dev->max_mtu = 0;
 	dev->netdev_ops	= &gre_tap_netdev_ops;
 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	dev->priv_flags	|= IFF_LIVE_ADDR_CHANGE;

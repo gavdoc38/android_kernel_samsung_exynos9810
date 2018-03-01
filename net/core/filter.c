@@ -4097,7 +4097,8 @@ __bpf_skc_lookup(struct sk_buff *skb, struct bpf_sock_tuple *tuple, u32 len,
 
 	family = len == sizeof(tuple->ipv4) ? AF_INET : AF_INET6;
 
-	if (unlikely(family == AF_UNSPEC || netns_id > U32_MAX || flags))
+	if (unlikely(family == AF_UNSPEC || flags ||
+		     !((s32)netns_id < 0 || netns_id <= S32_MAX)))
 		goto out;
 
 	if (sdif < 0) {
@@ -4107,15 +4108,15 @@ __bpf_skc_lookup(struct sk_buff *skb, struct bpf_sock_tuple *tuple, u32 len,
 			sdif = inet6_sdif(skb);
 	}
 
-	if (netns_id) {
+	if ((s32)netns_id < 0) {
+		net = caller_net;
+		sk = sk_lookup(net, tuple, ifindex, sdif, family, proto);
+	} else {
 		net = get_net_ns_by_id(caller_net, netns_id);
 		if (unlikely(!net))
 			goto out;
 		sk = sk_lookup(net, tuple, ifindex, sdif, family, proto);
 		put_net(net);
-	} else {
-		net = caller_net;
-		sk = sk_lookup(net, tuple, ifindex, sdif, family, proto);
 	}
 out:
 	return sk;
@@ -5599,7 +5600,7 @@ BPF_CALL_4(bpf_skb_set_tunnel_key, struct sk_buff *, skb,
 	struct ip_tunnel_info *info;
 
 	if (unlikely(flags & ~(BPF_F_TUNINFO_IPV6 | BPF_F_ZERO_CSUM_TX |
-			       BPF_F_DONT_FRAGMENT)))
+			       BPF_F_DONT_FRAGMENT | BPF_F_SEQ_NUMBER)))
 		return -EINVAL;
 	if (unlikely(size != sizeof(struct bpf_tunnel_key))) {
 		switch (size) {
@@ -5626,11 +5627,16 @@ BPF_CALL_4(bpf_skb_set_tunnel_key, struct sk_buff *, skb,
 	skb_dst_set(skb, (struct dst_entry *) md);
 
 	info = &md->u.tun_info;
+	memset(info, 0, sizeof(*info));
 	info->mode = IP_TUNNEL_INFO_TX;
 
 	info->key.tun_flags = TUNNEL_KEY | TUNNEL_CSUM | TUNNEL_NOCACHE;
 	if (flags & BPF_F_DONT_FRAGMENT)
 		info->key.tun_flags |= TUNNEL_DONT_FRAGMENT;
+	if (flags & BPF_F_ZERO_CSUM_TX)
+		info->key.tun_flags &= ~TUNNEL_CSUM;
+	if (flags & BPF_F_SEQ_NUMBER)
+		info->key.tun_flags |= TUNNEL_SEQ;
 
 	info->key.tun_id = cpu_to_be64(from->tunnel_id);
 	info->key.tos = from->tunnel_tos;
@@ -5644,8 +5650,6 @@ BPF_CALL_4(bpf_skb_set_tunnel_key, struct sk_buff *, skb,
 				  IPV6_FLOWLABEL_MASK;
 	} else {
 		info->key.u.ipv4.dst = cpu_to_be32(from->remote_ipv4);
-		if (flags & BPF_F_ZERO_CSUM_TX)
-			info->key.tun_flags &= ~TUNNEL_CSUM;
 	}
 
 	return 0;
