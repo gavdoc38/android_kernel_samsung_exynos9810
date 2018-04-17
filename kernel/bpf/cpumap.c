@@ -190,15 +190,6 @@ static void get_cpu_map_entry(struct bpf_cpu_map_entry *rcpu)
 	atomic_inc(&rcpu->refcnt);
 }
 
-/* Packet description carried in the buffer headroom to the remote CPU. */
-struct xdp_pkt {
-	void *data;
-	u16 len;
-	u16 headroom;
-	u16 metasize;
-	struct net_device *dev_rx;
-};
-
 static struct xdp_pkt *convert_to_xdp_pkt(struct xdp_buff *xdp)
 {
 	struct xdp_pkt *xdp_pkt;

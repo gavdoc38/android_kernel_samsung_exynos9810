@@ -3659,6 +3659,7 @@ static unsigned long xdp_get_metalen(const struct xdp_buff *xdp)
 
 BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
 {
+	void *xdp_pkt_end = xdp->data_hard_start + sizeof(struct xdp_pkt);
 	unsigned long metalen = xdp_get_metalen(xdp);
 	void *data_start = xdp->data_hard_start + metalen;
 	void *data = xdp->data + offset;
@@ -3666,6 +3667,13 @@ BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
 	if (unlikely(data < data_start ||
 		     data > xdp->data_end - ETH_HLEN))
 		return -EINVAL;
+
+	/* Clear stale CPU-map metadata when a recycled frame exposes it. */
+	if (data < xdp_pkt_end) {
+		unsigned long clearlen = xdp_pkt_end - data;
+
+		memset(data, 0, clearlen);
+	}
 
 	if (metalen)
 		memmove(xdp->data_meta + offset,
@@ -4152,7 +4160,12 @@ __bpf_skc_lookup(struct sk_buff *skb, struct bpf_sock_tuple *tuple, u32 len,
 	u8 family = AF_UNSPEC;
 	struct net *net;
 
-	family = len == sizeof(tuple->ipv4) ? AF_INET : AF_INET6;
+	if (len == sizeof(tuple->ipv4))
+		family = AF_INET;
+	else if (len == sizeof(tuple->ipv6))
+		family = AF_INET6;
+	else
+		return NULL;
 
 	if (unlikely(family == AF_UNSPEC || flags ||
 		     !((s32)netns_id < 0 || netns_id <= S32_MAX)))
@@ -5734,6 +5747,8 @@ BPF_CALL_3(bpf_skb_set_tunnel_opt, struct sk_buff *, skb,
 		return -ENOMEM;
 
 	ip_tunnel_info_opts_set(info, from, size);
+	if (size)
+		info->key.tun_flags |= TUNNEL_OPTIONS_PRESENT;
 
 	return 0;
 }
@@ -6568,6 +6583,8 @@ BPF_CALL_3(bpf_bind, struct bpf_sock_addr_kern *, ctx, struct sockaddr *, addr,
 	 * Only binding to IP is supported.
 	 */
 	err = -EINVAL;
+	if (addr_len < offsetofend(struct sockaddr, sa_family))
+		return err;
 	if (addr->sa_family == AF_INET) {
 		if (addr_len < sizeof(struct sockaddr_in))
 			return err;

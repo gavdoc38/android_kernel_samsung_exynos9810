@@ -56,6 +56,15 @@ struct xdp_buff {
 	struct xdp_txq_info *txq;
 };
 
+/* Packet description carried in the buffer headroom to a remote CPU. */
+struct xdp_pkt {
+	void *data;
+	u16 len;
+	u16 headroom;
+	u16 metasize;
+	struct net_device *dev_rx;
+};
+
 /* Reserve the skb_shared_info tailroom when growing an XDP packet. */
 static inline void *xdp_data_hard_end(const struct xdp_buff *xdp)
 {
