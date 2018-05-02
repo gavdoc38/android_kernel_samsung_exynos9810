@@ -1501,6 +1501,8 @@ static inline u16 socket_type_to_security_class(int family, int type, int protoc
 		}
 	case PF_PACKET:
 		return SECCLASS_PACKET_SOCKET;
+	case PF_XDP:
+		return SECCLASS_XDP_SOCKET;
 	case PF_KEY:
 		return SECCLASS_KEY_SOCKET;
 	case PF_APPLETALK:

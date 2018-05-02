@@ -37,6 +37,7 @@ struct xdp_rxq_info {
 	struct net_device *dev;
 	u32 queue_index;
 	u32 reg_state;
+	unsigned int napi_id;
 } ____cacheline_aligned; /* perf critical, avoid false-sharing */
 
 struct xdp_txq_info {
@@ -48,6 +49,7 @@ struct xdp_buff {
 	void *data_end;
 	void *data_meta;
 	void *data_hard_start;
+	u32 frame_sz;
 	struct xdp_rxq_info *rxq;
 	struct xdp_txq_info *txq;
 };

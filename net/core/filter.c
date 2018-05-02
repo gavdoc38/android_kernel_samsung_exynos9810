@@ -80,6 +80,7 @@
 #include <net/seg6.h>
 #include <net/seg6_local.h>
 #include <net/lwtunnel.h>
+#include <net/xdp_sock.h>
 
 /**
  *	sk_filter_trim_cap - run a packet through a socket filter
@@ -3675,6 +3676,10 @@ static int __bpf_tx_xdp_map(struct net_device *dev_rx, void *fwd,
 		if (err)
 			return err;
 		__cpu_map_insert_ctx(map, index);
+	} else if (map->map_type == BPF_MAP_TYPE_XSKMAP) {
+		err = __xsk_map_redirect(fwd, xdp);
+		if (err)
+			return err;
 	} else {
 		return -EINVAL;
 	}
@@ -3699,6 +3704,9 @@ void xdp_do_flush_map(void)
 	case BPF_MAP_TYPE_CPUMAP:
 		__cpu_map_flush(map);
 		break;
+	case BPF_MAP_TYPE_XSKMAP:
+		__xsk_map_flush();
+		break;
 	default:
 		break;
 	}
@@ -3714,6 +3722,8 @@ static void *__xdp_map_lookup_elem(struct bpf_map *map, u32 index)
 		return __dev_map_hash_lookup_elem(map, index);
 	case BPF_MAP_TYPE_CPUMAP:
 		return __cpu_map_lookup_elem(map, index);
+	case BPF_MAP_TYPE_XSKMAP:
+		return __xsk_map_lookup_elem(map, index);
 	default:
 		return NULL;
 	}
@@ -3812,6 +3822,7 @@ static int __xdp_generic_ok_fwd_dev(struct sk_buff *skb,
 
 static int xdp_do_generic_redirect_map(struct net_device *dev,
 				       struct sk_buff *skb,
+				       struct xdp_buff *xdp,
 				       struct bpf_prog *xdp_prog)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
@@ -3845,6 +3856,12 @@ static int xdp_do_generic_redirect_map(struct net_device *dev,
 		if (unlikely(err))
 			goto err;
 		skb->dev = fwd_dev;
+		generic_xdp_tx(skb, xdp_prog);
+	} else if (map->map_type == BPF_MAP_TYPE_XSKMAP) {
+		err = xsk_generic_rcv(fwd, xdp);
+		if (unlikely(err))
+			goto err;
+		consume_skb(skb);
 	} else {
 		/* Generic-XDP CPUMAP redirect is added separately. */
 		err = -EBADRQC;
@@ -3859,7 +3876,7 @@ err:
 }
 
 int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
-			    struct bpf_prog *xdp_prog)
+			    struct xdp_buff *xdp, struct bpf_prog *xdp_prog)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 	u32 index = ri->ifindex;
@@ -3867,7 +3884,7 @@ int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
 	int err = 0;
 
 	if (ri->map)
-		return xdp_do_generic_redirect_map(dev, skb, xdp_prog);
+		return xdp_do_generic_redirect_map(dev, skb, xdp, xdp_prog);
 
 	ri->ifindex = 0;
 	fwd = dev_get_by_index_rcu(dev_net(dev), index);
@@ -3882,6 +3899,7 @@ int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
 
 	skb->dev = fwd;
 	_trace_xdp_redirect(dev, xdp_prog, index);
+	generic_xdp_tx(skb, xdp_prog);
 	return 0;
 err:
 	_trace_xdp_redirect_err(dev, xdp_prog, index, err);

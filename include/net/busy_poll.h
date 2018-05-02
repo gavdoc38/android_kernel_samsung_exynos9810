@@ -27,6 +27,12 @@
 #include <linux/netdevice.h>
 #include <net/ip.h>
 
+/*		0 - Reserved to indicate value not set
+ *     1..NR_CPUS - Reserved for sender_cpu
+ *  NR_CPUS+1..~0 - Region available for NAPI IDs
+ */
+#define MIN_NAPI_ID ((unsigned int)(NR_CPUS + 1))
+
 #ifdef CONFIG_NET_RX_BUSY_POLL
 
 struct napi_struct;
@@ -87,6 +93,13 @@ static inline void sk_mark_napi_id(struct sock *sk, struct sk_buff *skb)
 	sk->sk_napi_id = skb->napi_id;
 }
 
+static inline void sk_mark_napi_id_once_xdp(struct sock *sk,
+					    const struct xdp_buff *xdp)
+{
+	if (!READ_ONCE(sk->sk_napi_id))
+		WRITE_ONCE(sk->sk_napi_id, xdp->rxq->napi_id);
+}
+
 #else /* CONFIG_NET_RX_BUSY_POLL */
 static inline unsigned long net_busy_loop_on(void)
 {
@@ -109,6 +122,11 @@ static inline void skb_mark_napi_id(struct sk_buff *skb,
 }
 
 static inline void sk_mark_napi_id(struct sock *sk, struct sk_buff *skb)
+{
+}
+
+static inline void sk_mark_napi_id_once_xdp(struct sock *sk,
+					    const struct xdp_buff *xdp)
 {
 }
 

@@ -67,6 +67,7 @@ struct mpls_dev;
 struct udp_tunnel_info;
 struct bpf_prog;
 struct xdp_buff;
+struct xsk_buff_pool;
 
 void netdev_set_default_ethtool_ops(struct net_device *dev,
 				    const struct ethtool_ops *ops);
@@ -580,6 +581,9 @@ struct netdev_queue {
 	 * (/sys/class/net/DEV/Q/trans_timeout)
 	 */
 	unsigned long		trans_timeout;
+#ifdef CONFIG_XDP_SOCKETS
+	struct xsk_buff_pool	*pool;
+#endif
 /*
  * write-mostly part
  */
@@ -700,6 +704,9 @@ struct netdev_rx_queue {
 	struct kobject			kobj;
 	struct net_device		*dev;
 	struct xdp_rxq_info		xdp_rxq;
+#ifdef CONFIG_XDP_SOCKETS
+	struct xsk_buff_pool		*pool;
+#endif
 } ____cacheline_aligned_in_smp;
 
 /*
@@ -833,6 +840,7 @@ enum bpf_netdev_command {
 	BPF_OFFLOAD_DESTROY,
 	BPF_OFFLOAD_MAP_ALLOC,
 	BPF_OFFLOAD_MAP_FREE,
+	XDP_SETUP_XSK_POOL,
 };
 
 struct bpf_prog_offload_ops;
@@ -876,8 +884,17 @@ struct netdev_bpf {
 		struct {
 			struct bpf_offloaded_map *offmap;
 		};
+		/* XDP_SETUP_XSK_POOL */
+		struct {
+			struct xsk_buff_pool *pool;
+			u16 queue_id;
+		} xsk;
 	};
 };
+
+/* Flags for ndo_xsk_wakeup. */
+#define XDP_WAKEUP_RX BIT(0)
+#define XDP_WAKEUP_TX BIT(1)
 
 /*
  * This structure defines the management hooks for network devices.
@@ -1379,6 +1396,8 @@ struct net_device_ops {
 	int			(*ndo_xdp_xmit)(struct net_device *dev,
 						struct xdp_buff *xdp);
 	void			(*ndo_xdp_flush)(struct net_device *dev);
+	int			(*ndo_xsk_wakeup)(struct net_device *dev,
+						  u32 queue_id, u32 flags);
 	struct net_device *	(*ndo_get_peer_dev)(struct net_device *dev);
 };
 
@@ -2535,6 +2554,7 @@ void dev_disable_lro(struct net_device *dev);
 int dev_loopback_xmit(struct net *net, struct sock *sk, struct sk_buff *newskb);
 int dev_queue_xmit(struct sk_buff *skb);
 int dev_queue_xmit_accel(struct sk_buff *skb, void *accel_priv);
+int __dev_direct_xmit(struct sk_buff *skb, u16 queue_id);
 int register_netdevice(struct net_device *dev);
 void unregister_netdevice_queue(struct net_device *dev, struct list_head *head);
 void unregister_netdevice_many(struct list_head *head);

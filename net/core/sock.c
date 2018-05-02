@@ -199,6 +199,12 @@ bool sk_net_capable(const struct sock *sk, int cap)
 }
 EXPORT_SYMBOL(sk_net_capable);
 
+void sk_error_report(struct sock *sk)
+{
+	sk->sk_error_report(sk);
+}
+EXPORT_SYMBOL(sk_error_report);
+
 /*
  * Each address family might have different locking rules, so we have
  * one slock key per address family:
@@ -226,7 +232,8 @@ static const char *const af_family_key_strings[AF_MAX+1] = {
   "sk_lock-AF_RXRPC" , "sk_lock-AF_ISDN"     , "sk_lock-AF_PHONET"   ,
   "sk_lock-AF_IEEE802154", "sk_lock-AF_CAIF" , "sk_lock-AF_ALG"      ,
   "sk_lock-AF_NFC"   , "sk_lock-AF_VSOCK"    , "sk_lock-AF_KCM"      ,
-  "sk_lock-AF_QIPCRTR", "sk_lock-AF_MAX"
+	"sk_lock-AF_QIPCRTR", "sk_lock-AF_RESERVED43",
+	"sk_lock-AF_XDP", "sk_lock-AF_MAX"
 };
 static const char *const af_family_slock_key_strings[AF_MAX+1] = {
   "slock-AF_UNSPEC", "slock-AF_UNIX"     , "slock-AF_INET"     ,
@@ -243,7 +250,8 @@ static const char *const af_family_slock_key_strings[AF_MAX+1] = {
   "slock-AF_RXRPC" , "slock-AF_ISDN"     , "slock-AF_PHONET"   ,
   "slock-AF_IEEE802154", "slock-AF_CAIF" , "slock-AF_ALG"      ,
   "slock-AF_NFC"   , "slock-AF_VSOCK"    ,"slock-AF_KCM"       ,
-  "slock-AF_QIPCRTR", "slock-AF_MAX"
+	"slock-AF_QIPCRTR", "slock-AF_RESERVED43",
+	"slock-AF_XDP", "slock-AF_MAX"
 };
 
 static const
@@ -262,7 +270,8 @@ char *const af_family_clock_key_strings[AF_MAX + 1] = {
   "clock-AF_RXRPC" , "clock-AF_ISDN"     , "clock-AF_PHONET"   ,
   "clock-AF_IEEE802154", "clock-AF_CAIF" , "clock-AF_ALG"      ,
   "clock-AF_NFC"   , "clock-AF_VSOCK"    , "clock-AF_KCM"      ,
-  "clock-AF_QIPCRTR", "clock-AF_MAX"
+	"clock-AF_QIPCRTR", "clock-AF_RESERVED43",
+	"clock-AF_XDP", "clock-AF_MAX"
 };
 
 /*
@@ -2785,7 +2794,7 @@ static void sock_def_error_report(struct sock *sk)
 	rcu_read_unlock();
 }
 
-static void sock_def_readable(struct sock *sk)
+void sock_def_readable(struct sock *sk)
 {
 	struct socket_wq *wq;
 

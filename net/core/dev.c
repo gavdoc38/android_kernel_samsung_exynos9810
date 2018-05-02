@@ -3533,6 +3533,38 @@ int dev_queue_xmit_accel(struct sk_buff *skb, void *accel_priv)
 }
 EXPORT_SYMBOL(dev_queue_xmit_accel);
 
+int __dev_direct_xmit(struct sk_buff *skb, u16 queue_id)
+{
+	struct net_device *dev = skb->dev;
+	struct sk_buff *orig_skb = skb;
+	struct netdev_queue *txq;
+	int ret = NETDEV_TX_BUSY;
+
+	if (unlikely(!netif_running(dev) || !netif_carrier_ok(dev)))
+		goto drop;
+
+	skb = validate_xmit_skb_list(skb, dev);
+	if (skb != orig_skb)
+		goto drop;
+
+	skb_set_queue_mapping(skb, queue_id);
+	txq = skb_get_tx_queue(dev, skb);
+
+	local_bh_disable();
+	HARD_TX_LOCK(dev, txq, smp_processor_id());
+	if (!netif_xmit_frozen_or_drv_stopped(txq))
+		ret = netdev_start_xmit(skb, dev, txq, 0);
+	HARD_TX_UNLOCK(dev, txq);
+	local_bh_enable();
+	return ret;
+
+drop:
+	atomic_long_inc(&dev->tx_dropped);
+	kfree_skb_list(skb);
+	return NET_XMIT_DROP;
+}
+EXPORT_SYMBOL(__dev_direct_xmit);
+
 
 /*************************************************************************
  *			Receiver routines
@@ -3895,12 +3927,12 @@ static struct netdev_rx_queue *netif_get_rxqueue(struct sk_buff *skb)
 }
 
 static u32 netif_receive_generic_xdp(struct sk_buff *skb,
+				     struct xdp_buff *xdp,
 				     struct bpf_prog *xdp_prog)
 {
 	struct netdev_rx_queue *rxqueue;
 	void *orig_data, *orig_data_end;
 	u32 metalen, act = XDP_DROP;
-	struct xdp_buff xdp;
 	int hlen, off;
 	u32 mac_len;
 
@@ -3934,19 +3966,22 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 	 */
 	mac_len = skb->data - skb_mac_header(skb);
 	hlen = skb_headlen(skb) + mac_len;
-	xdp.data = skb->data - mac_len;
-	xdp.data_end = xdp.data + hlen;
-	xdp.data_meta = xdp.data;
-	xdp.data_hard_start = skb->data - skb_headroom(skb);
-	orig_data_end = xdp.data_end;
-	orig_data = xdp.data;
+	xdp->data = skb->data - mac_len;
+	xdp->data_end = xdp->data + hlen;
+	xdp->data_meta = xdp->data;
+	xdp->data_hard_start = skb->data - skb_headroom(skb);
+	xdp->frame_sz = skb_end_pointer(skb) -
+			(unsigned char *)xdp->data_hard_start;
+	orig_data_end = xdp->data_end;
+	orig_data = xdp->data;
 
 	rxqueue = netif_get_rxqueue(skb);
-	xdp.rxq = &rxqueue->xdp_rxq;
+	xdp->rxq = &rxqueue->xdp_rxq;
+	xdp->txq = NULL;
 
-	act = bpf_prog_run_xdp(xdp_prog, &xdp);
+	act = bpf_prog_run_xdp(xdp_prog, xdp);
 
-	off = xdp.data - orig_data;
+	off = xdp->data - orig_data;
 	if (off > 0)
 		__skb_pull(skb, off);
 	else if (off < 0)
@@ -3955,9 +3990,9 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 	/* check if bpf_xdp_adjust_tail was used. it can only "shrink"
 	 * pckt.
 	 */
-	off = orig_data_end - xdp.data_end;
+	off = orig_data_end - xdp->data_end;
 	if (off != 0) {
-		skb_set_tail_pointer(skb, xdp.data_end - xdp.data);
+		skb_set_tail_pointer(skb, xdp->data_end - xdp->data);
 		skb->len -= off;
 	}
 
@@ -3967,7 +4002,7 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 		__skb_push(skb, mac_len);
 		break;
 	case XDP_PASS:
-		metalen = xdp.data - xdp.data_meta;
+		metalen = xdp->data - xdp->data_meta;
 		if (metalen)
 			skb_metadata_set(skb, metalen);
 		break;
@@ -4018,17 +4053,18 @@ static struct static_key generic_xdp_needed __read_mostly;
 int do_xdp_generic(struct bpf_prog *xdp_prog, struct sk_buff *skb)
 {
 	if (xdp_prog) {
-		u32 act = netif_receive_generic_xdp(skb, xdp_prog);
+		struct xdp_buff xdp = {};
+		u32 act = netif_receive_generic_xdp(skb, &xdp, xdp_prog);
 		int err;
 
 		if (act != XDP_PASS) {
 			switch (act) {
 			case XDP_REDIRECT:
 				err = xdp_do_generic_redirect(skb->dev, skb,
-							      xdp_prog);
+							      &xdp, xdp_prog);
 				if (err)
 					goto out_redir;
-			/* fallthru to submit skb */
+				break;
 			case XDP_TX:
 				generic_xdp_tx(skb, xdp_prog);
 				break;
