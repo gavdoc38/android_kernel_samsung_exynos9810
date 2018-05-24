@@ -102,6 +102,7 @@ enum bpf_cmd {
 	BPF_RAW_TRACEPOINT_OPEN,
 	BPF_BTF_LOAD = 18,
 	BPF_BTF_GET_FD_BY_ID = 19,
+	BPF_TASK_FD_QUERY = 20,
 	BPF_MAP_LOOKUP_AND_DELETE_ELEM = 21,
 	BPF_MAP_FREEZE = 22,
 	BPF_BTF_GET_NEXT_ID = 23,
@@ -461,6 +462,18 @@ union bpf_attr {
 		__u32		btf_log_size;
 		__u32		btf_log_level;
 	};
+
+	struct {
+		__u32		pid;
+		__u32		fd;
+		__u32		flags;
+		__u32		buf_len;
+		__aligned_u64	buf;
+		__u32		prog_id;
+		__u32		fd_type;
+		__u64		probe_offset;
+		__u64		probe_addr;
+	} task_fd_query;
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
@@ -1774,6 +1787,15 @@ struct bpf_sockopt {
 	__s32	optname;
 	__s32	optlen;
 	__s32	retval;
+};
+
+enum bpf_task_fd_type {
+	BPF_FD_TYPE_RAW_TRACEPOINT,
+	BPF_FD_TYPE_TRACEPOINT,
+	BPF_FD_TYPE_KPROBE,
+	BPF_FD_TYPE_KRETPROBE,
+	BPF_FD_TYPE_UPROBE,
+	BPF_FD_TYPE_URETPROBE,
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */
