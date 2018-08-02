@@ -891,9 +891,44 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
 int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
+int bpf_prog_test_run_flow_dissector(struct bpf_prog *prog,
+				     const union bpf_attr *kattr,
+				     union bpf_attr __user *uattr);
 int bpf_prog_test_run_sk_lookup(struct bpf_prog *prog,
 				const union bpf_attr *kattr,
 				union bpf_attr __user *uattr);
+#ifdef CONFIG_NET
+int bpf_prog_test_run_tracing(struct bpf_prog *prog,
+			      const union bpf_attr *kattr,
+			      union bpf_attr __user *uattr);
+int bpf_prog_test_run_raw_tp(struct bpf_prog *prog,
+			     const union bpf_attr *kattr,
+			     union bpf_attr __user *uattr);
+struct bpf_fentry_test_t;
+int bpf_fentry_test1(int a);
+int bpf_fentry_test2(int a, u64 b);
+int bpf_fentry_test3(char a, int b, u64 c);
+int bpf_fentry_test4(void *a, char b, int c, u64 d);
+int bpf_fentry_test5(u64 a, void *b, short c, int d, u64 e);
+int bpf_fentry_test6(u64 a, void *b, short c, int d, void *e, u64 f);
+int bpf_fentry_test7(struct bpf_fentry_test_t *arg);
+int bpf_fentry_test8(struct bpf_fentry_test_t *arg);
+int bpf_modify_return_test(int a, int *b);
+#else
+static inline int bpf_prog_test_run_tracing(struct bpf_prog *prog,
+					    const union bpf_attr *kattr,
+					    union bpf_attr __user *uattr)
+{
+	return -ENOTSUPP;
+}
+
+static inline int bpf_prog_test_run_raw_tp(struct bpf_prog *prog,
+					   const union bpf_attr *kattr,
+					   union bpf_attr __user *uattr)
+{
+	return -ENOTSUPP;
+}
+#endif
 #if defined(CONFIG_NET) && defined(CONFIG_BPF_SYSCALL)
 int bpf_prog_test_run_syscall(struct bpf_prog *prog,
 			      const union bpf_attr *kattr,
