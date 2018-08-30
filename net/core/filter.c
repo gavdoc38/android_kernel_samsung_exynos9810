@@ -6187,8 +6187,11 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 			   char *optval, int optlen)
 {
+	char devname[IFNAMSIZ];
+	int val, valbool;
+	struct net *net;
+	int ifindex;
 	int ret = 0;
-	int val;
 
 	if (!sk_fullsock(sk))
 		return -EINVAL;
@@ -6196,9 +6199,10 @@ static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 	sock_owned_by_me(sk);
 
 	if (level == SOL_SOCKET) {
-		if (optlen != sizeof(int))
+		if (optlen != sizeof(int) && optname != SO_BINDTODEVICE)
 			return -EINVAL;
 		val = *((int *)optval);
+		valbool = val ? 1 : 0;
 
 		/* Only some socketops are supported */
 		switch (optname) {
@@ -6232,6 +6236,38 @@ static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 				sk->sk_mark = val;
 				sk_dst_reset(sk);
 			}
+			break;
+		case SO_BINDTODEVICE:
+			optlen = min_t(long, optlen, IFNAMSIZ - 1);
+			strncpy(devname, optval, optlen);
+			devname[optlen] = 0;
+
+			ifindex = 0;
+			if (devname[0] != '\0') {
+				struct net_device *dev;
+
+				ret = -ENODEV;
+				net = sock_net(sk);
+				dev = dev_get_by_name(net, devname);
+				if (!dev)
+					break;
+				ifindex = dev->ifindex;
+				dev_put(dev);
+			}
+			ret = sock_bindtoindex(sk, ifindex, false);
+			break;
+		case SO_BINDTOIFINDEX:
+			ret = sock_bindtoindex(sk, val, false);
+			break;
+		case SO_KEEPALIVE:
+#ifdef CONFIG_INET
+			if (sk->sk_prot->setsockopt == tcp_setsockopt)
+				tcp_set_keepalive(sk, valbool);
+#endif
+			sock_valbool_flag(sk, SOCK_KEEPOPEN, valbool);
+			break;
+		case SO_REUSEPORT:
+			sk->sk_reuseport = valbool;
 			break;
 		default:
 			ret = -EINVAL;
@@ -6329,6 +6365,47 @@ static int _bpf_setsockopt(struct sock *sk, int level, int optname,
 					return -EINVAL;
 				icsk->icsk_rto_min = timeout;
 				break;
+			case TCP_SAVE_SYN:
+				if (val < 0 || val > 1)
+					ret = -EINVAL;
+				else
+					tp->save_syn = val;
+				break;
+			case TCP_KEEPIDLE:
+				ret = tcp_sock_set_keepidle_locked(sk, val);
+				break;
+			case TCP_KEEPINTVL:
+				if (val < 1 || val > MAX_TCP_KEEPINTVL)
+					ret = -EINVAL;
+				else
+					tp->keepalive_intvl = val * HZ;
+				break;
+			case TCP_KEEPCNT:
+				if (val < 1 || val > MAX_TCP_KEEPCNT)
+					ret = -EINVAL;
+				else
+					tp->keepalive_probes = val;
+				break;
+			case TCP_SYNCNT:
+				if (val < 1 || val > MAX_TCP_SYNCNT)
+					ret = -EINVAL;
+				else
+					icsk->icsk_syn_retries = val;
+				break;
+			case TCP_USER_TIMEOUT:
+				if (val < 0)
+					ret = -EINVAL;
+				else
+					icsk->icsk_user_timeout =
+						msecs_to_jiffies(val);
+				break;
+			case TCP_NOTSENT_LOWAT:
+				tp->notsent_lowat = val;
+				sk->sk_write_space(sk);
+				break;
+			case TCP_WINDOW_CLAMP:
+				ret = tcp_set_window_clamp(sk, val);
+				break;
 			default:
 				ret = -EINVAL;
 			}
@@ -6358,6 +6435,12 @@ static int _bpf_getsockopt(struct sock *sk, int level, int optname,
 			break;
 		case SO_PRIORITY:
 			*((int *)optval) = sk->sk_priority;
+			break;
+		case SO_BINDTOIFINDEX:
+			*((int *)optval) = sk->sk_bound_dev_if;
+			break;
+		case SO_REUSEPORT:
+			*((int *)optval) = sk->sk_reuseport;
 			break;
 		default:
 			goto err_clear;
@@ -6395,14 +6478,25 @@ static int _bpf_getsockopt(struct sock *sk, int level, int optname,
 #endif
 	} else if (level == SOL_TCP &&
 		   sk->sk_prot->getsockopt == tcp_getsockopt) {
-		if (optname == TCP_CONGESTION) {
-			struct inet_connection_sock *icsk = inet_csk(sk);
+		struct inet_connection_sock *icsk;
+		struct tcp_sock *tp;
 
+		switch (optname) {
+		case TCP_CONGESTION:
+			icsk = inet_csk(sk);
 			if (!icsk->icsk_ca_ops || optlen <= 1)
 				goto err_clear;
 			strncpy(optval, icsk->icsk_ca_ops->name, optlen);
 			optval[optlen - 1] = 0;
-		} else {
+			break;
+		case TCP_SAVED_SYN:
+			tp = tcp_sk(sk);
+			if (optlen <= 0 || !tp->saved_syn ||
+			    optlen > tcp_saved_syn_len(tp->saved_syn))
+				goto err_clear;
+			memcpy(optval, tp->saved_syn->data, optlen);
+			break;
+		default:
 			goto err_clear;
 		}
 #endif

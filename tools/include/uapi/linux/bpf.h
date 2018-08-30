@@ -1029,22 +1029,25 @@ union bpf_attr {
  *
  * int bpf_setsockopt(void *bpf_socket, level, optname, optval, optlen)
  *     Calls setsockopt. Not all opts are available, only those with
- *     integer optvals plus TCP_CONGESTION.
- *     Supported levels: SOL_SOCKET and IPPROTO_TCP
+ *     integer optvals plus SO_BINDTODEVICE and TCP_CONGESTION.
+ *     Supported levels: SOL_SOCKET, IPPROTO_IP, IPPROTO_IPV6 and
+ *     IPPROTO_TCP.
  *     @bpf_socket: pointer to struct bpf_sock_ops for socket operations
  *       programs, or struct bpf_sock_addr for connect programs
- *     @level: SOL_SOCKET or IPPROTO_TCP
+ *     @level: socket option level
  *     @optname: option name
  *     @optval: pointer to option value
  *     @optlen: length of optval in bytes
  *     Return: 0 or negative error
  *
  * int bpf_getsockopt(void *bpf_socket, level, optname, optval, optlen)
- *     Calls getsockopt. Not all opts are available.
- *     Supported levels: IPPROTO_TCP
+ *     Calls getsockopt. Not all opts are available, only those with
+ *     integer optvals plus TCP_CONGESTION and TCP_SAVED_SYN.
+ *     Supported levels: SOL_SOCKET, IPPROTO_IP, IPPROTO_IPV6 and
+ *     IPPROTO_TCP.
  *     @bpf_socket: pointer to struct bpf_sock_ops for socket operations
  *       programs, or struct bpf_sock_addr for connect programs
- *     @level: IPPROTO_TCP
+ *     @level: socket option level
  *     @optname: option name
  *     @optval: pointer to option value
  *     @optlen: length of optval in bytes
