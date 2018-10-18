@@ -93,6 +93,7 @@ enum bpf_cmd {
 	BPF_PROG_GET_FD_BY_ID,
 	BPF_MAP_GET_FD_BY_ID,
 	BPF_OBJ_GET_INFO_BY_FD,
+	BPF_MAP_LOOKUP_AND_DELETE_ELEM = 21,
 };
 
 enum bpf_map_type {
@@ -113,6 +114,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_DEVMAP,
 	BPF_MAP_TYPE_SOCKMAP,
 	BPF_MAP_TYPE_CPUMAP,
+	BPF_MAP_TYPE_QUEUE = 22,
+	BPF_MAP_TYPE_STACK = 23,
 };
 
 enum bpf_prog_type {
