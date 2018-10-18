@@ -3568,6 +3568,13 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		    func_id != BPF_FUNC_msg_redirect_hash)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_QUEUE:
+	case BPF_MAP_TYPE_STACK:
+		if (func_id != BPF_FUNC_map_peek_elem &&
+		    func_id != BPF_FUNC_map_pop_elem &&
+		    func_id != BPF_FUNC_map_push_elem)
+			goto error;
+		break;
 	default:
 		break;
 	}
@@ -3621,6 +3628,13 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 	case BPF_FUNC_sk_storage_get:
 	case BPF_FUNC_sk_storage_delete:
 		if (map->map_type != BPF_MAP_TYPE_SK_STORAGE)
+			goto error;
+		break;
+	case BPF_FUNC_map_peek_elem:
+	case BPF_FUNC_map_pop_elem:
+	case BPF_FUNC_map_push_elem:
+		if (map->map_type != BPF_MAP_TYPE_QUEUE &&
+		    map->map_type != BPF_MAP_TYPE_STACK)
 			goto error;
 		break;
 	default:
@@ -3895,7 +3909,12 @@ record_func_map(struct bpf_verifier_env *env, struct bpf_call_arg_meta *meta,
 	struct bpf_map *map = meta->map_ptr;
 
 	if (func_id != BPF_FUNC_tail_call &&
-	    func_id != BPF_FUNC_map_lookup_elem)
+	    func_id != BPF_FUNC_map_lookup_elem &&
+	    func_id != BPF_FUNC_map_update_elem &&
+	    func_id != BPF_FUNC_map_delete_elem &&
+	    func_id != BPF_FUNC_map_push_elem &&
+	    func_id != BPF_FUNC_map_pop_elem &&
+	    func_id != BPF_FUNC_map_peek_elem)
 		return 0;
 	if (map == NULL) {
 		verbose(env, "kernel subsystem misconfigured verifier\n");
