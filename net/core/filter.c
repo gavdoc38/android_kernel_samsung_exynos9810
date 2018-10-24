@@ -8000,6 +8000,11 @@ static bool cg_skb_is_valid_access(int off, int size,
 	case bpf_ctx_range(struct __sk_buff, data_meta):
 	case bpf_ctx_range(struct __sk_buff, wire_len):
 		return false;
+	case bpf_ctx_range(struct __sk_buff, data):
+	case bpf_ctx_range(struct __sk_buff, data_end):
+		if (!capable(CAP_SYS_ADMIN))
+			return false;
+		break;
 	}
 	if (type == BPF_WRITE) {
 		switch (off) {
