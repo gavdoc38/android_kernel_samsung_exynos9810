@@ -1108,6 +1108,8 @@ static u64 ___bpf_prog_run(u64 *regs, const struct bpf_insn *insn, u64 *stack)
 		[BPF_ALU | BPF_MUL | BPF_K] = &&ALU_MUL_K,
 		[BPF_ALU | BPF_MOV | BPF_X] = &&ALU_MOV_X,
 		[BPF_ALU | BPF_MOV | BPF_K] = &&ALU_MOV_K,
+		[BPF_ALU | BPF_ARSH | BPF_X] = &&ALU_ARSH_X,
+		[BPF_ALU | BPF_ARSH | BPF_K] = &&ALU_ARSH_K,
 		[BPF_ALU | BPF_DIV | BPF_X] = &&ALU_DIV_X,
 		[BPF_ALU | BPF_DIV | BPF_K] = &&ALU_DIV_K,
 		[BPF_ALU | BPF_MOD | BPF_X] = &&ALU_MOD_X,
@@ -1273,6 +1275,12 @@ select_insn:
 	LD_IMM_DW:
 		DST = (u64) (u32) insn[0].imm | ((u64) (u32) insn[1].imm) << 32;
 		insn++;
+		CONT;
+	ALU_ARSH_X:
+		DST = (u64) (u32) ((*(s32 *) &DST) >> SRC);
+		CONT;
+	ALU_ARSH_K:
+		DST = (u64) (u32) ((*(s32 *) &DST) >> IMM);
 		CONT;
 	ALU64_ARSH_X:
 		(*(s64 *) &DST) >>= SRC;
