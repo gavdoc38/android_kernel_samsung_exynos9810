@@ -105,4 +105,21 @@ static inline int bpf_prog_load(enum bpf_prog_type type,
 	return bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
 }
 
+static inline int bpf_prog_test_run(int prog_fd, const void *data,
+				    uint32_t size, uint32_t *retval)
+{
+	union bpf_attr attr = {};
+	int err;
+
+	attr.test.prog_fd = prog_fd;
+	attr.test.data_in = bpf_ptr_to_u64(data);
+	attr.test.data_size_in = size;
+	attr.test.repeat = 1;
+
+	err = bpf(BPF_PROG_TEST_RUN, &attr, sizeof(attr));
+	if (!err && retval)
+		*retval = attr.test.retval;
+	return err;
+}
+
 #endif /* __BPF_SYS__ */

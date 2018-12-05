@@ -42,6 +42,8 @@ struct bpf_test {
 	int fixup_prog[MAX_FIXUPS];
 	const char *errstr;
 	const char *errstr_unpriv;
+	bool run;
+	__u32 retval;
 	enum {
 		UNDEF,
 		ACCEPT,
@@ -171,6 +173,52 @@ static struct bpf_test tests[] = {
 		},
 		.errstr = "invalid bpf_ld_imm64 insn",
 		.result = REJECT,
+	},
+	{
+		"arsh32 on imm",
+		.insns = {
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_ALU32_IMM(BPF_ARSH, BPF_REG_0, 5),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.run = true,
+		.retval = 0,
+	},
+	{
+		"arsh32 on imm 2",
+		.insns = {
+			BPF_LD_IMM64(BPF_REG_0, 0x1122334485667788),
+			BPF_ALU32_IMM(BPF_ARSH, BPF_REG_0, 7),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.run = true,
+		.retval = -16069393,
+	},
+	{
+		"arsh32 on reg",
+		.insns = {
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_MOV64_IMM(BPF_REG_1, 5),
+			BPF_ALU32_REG(BPF_ARSH, BPF_REG_0, BPF_REG_1),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.run = true,
+		.retval = 0,
+	},
+	{
+		"arsh32 on reg 2",
+		.insns = {
+			BPF_LD_IMM64(BPF_REG_0, 0xffff55667788),
+			BPF_MOV64_IMM(BPF_REG_1, 15),
+			BPF_ALU32_REG(BPF_ARSH, BPF_REG_0, BPF_REG_1),
+			BPF_EXIT_INSN(),
+		},
+		.result = ACCEPT,
+		.run = true,
+		.retval = 43724,
 	},
 	{
 		"no bpf_exit",
@@ -3398,6 +3446,8 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 	int prog_len = probe_filter_length(prog);
 	int prog_type = test->prog_type;
 	int fd_f1 = -1, fd_f2 = -1, fd_f3 = -1;
+	char data[64] = {};
+	__u32 retval;
 	int fd_prog, expected_ret;
 	const char *expected_err;
 
@@ -3424,6 +3474,18 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 		}
 		if (!strstr(bpf_vlog, expected_err)) {
 			printf("FAIL\nUnexpected error message!\n");
+			goto fail_log;
+		}
+	}
+	if (test->run) {
+		if (bpf_prog_test_run(fd_prog, data, sizeof(data), &retval)) {
+			printf("FAIL\nUnexpected BPF_PROG_TEST_RUN error '%s'!\n",
+			       strerror(errno));
+			goto fail_log;
+		}
+		if (retval != test->retval) {
+			printf("FAIL\nUnexpected retval 0x%x != 0x%x!\n",
+			       retval, test->retval);
 			goto fail_log;
 		}
 	}
