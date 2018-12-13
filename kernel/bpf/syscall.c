@@ -1821,6 +1821,7 @@ static int bpf_raw_tracepoint_release(struct inode *inode, struct file *filp)
 		bpf_probe_unregister(raw_tp->btp, raw_tp->prog);
 		bpf_prog_put(raw_tp->prog);
 	}
+	bpf_put_raw_tracepoint(raw_tp->btp);
 	kfree(raw_tp);
 	return 0;
 }
@@ -1840,7 +1841,6 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 	const char *tp_name;
 	char buf[128];
 	int tp_fd, err;
-
 	if (CHECK_ATTR(BPF_RAW_TRACEPOINT_OPEN))
 		return -EINVAL;
 
@@ -1873,7 +1873,7 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 		tp_name = buf;
 	}
 
-	btp = bpf_find_raw_tracepoint(tp_name);
+	btp = bpf_get_raw_tracepoint(tp_name);
 	if (!btp) {
 		err = -ENOENT;
 		goto out_put_prog;
@@ -1882,7 +1882,7 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 	raw_tp = kzalloc(sizeof(*raw_tp), GFP_USER);
 	if (!raw_tp) {
 		err = -ENOMEM;
-		goto out_put_prog;
+		goto out_put_btp;
 	}
 	raw_tp->btp = btp;
 	raw_tp->prog = prog;
@@ -1902,6 +1902,8 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 
 out_free_tp:
 	kfree(raw_tp);
+out_put_btp:
+	bpf_put_raw_tracepoint(btp);
 out_put_prog:
 	bpf_prog_put(prog);
 	return err;
