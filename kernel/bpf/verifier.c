@@ -43,6 +43,7 @@
 #include <linux/stringify.h>
 #include <linux/bsearch.h>
 #include <linux/sort.h>
+#include <linux/ctype.h>
 
 #include "disasm.h"
 
@@ -213,6 +214,27 @@ struct bpf_call_arg_meta {
 };
 
 static DEFINE_MUTEX(bpf_verifier_lock);
+
+static const struct bpf_line_info *
+find_linfo(const struct bpf_verifier_env *env, u32 insn_off)
+{
+	const struct bpf_line_info *linfo;
+	const struct bpf_prog *prog;
+	u32 i, nr_linfo;
+
+	prog = env->prog;
+	nr_linfo = prog->aux->nr_linfo;
+
+	if (!nr_linfo || insn_off >= prog->len)
+		return NULL;
+
+	linfo = prog->aux->linfo;
+	for (i = 1; i < nr_linfo; i++)
+		if (insn_off < linfo[i].insn_off)
+			break;
+
+	return &linfo[i - 1];
+}
 
 void bpf_verifier_vlog(struct bpf_verifier_log *log, const char *fmt,
 		       va_list args)
@@ -7846,6 +7868,8 @@ static int do_check(struct bpf_verifier_env *env)
 	int insn_cnt = env->prog->len;
 	bool do_print_state = false;
 	int prev_insn_idx = -1;
+
+	env->prev_linfo = NULL;
 
 	state = kzalloc(sizeof(struct bpf_verifier_state), GFP_KERNEL);
 	if (!state)
