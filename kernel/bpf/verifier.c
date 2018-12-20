@@ -12751,10 +12751,11 @@ skip_full_check:
 	env->explored_states = NULL;
 
 	if (ret == 0)
-		sanitize_dead_code(env);
-
-	if (ret == 0)
 		ret = check_max_stack_depth(env);
+
+	/* instruction rewrites happen after this point */
+	if (ret == 0)
+		sanitize_dead_code(env);
 
 	if (ret == 0)
 		/* program is valid, convert *(u32*)(ctx + off) accesses */

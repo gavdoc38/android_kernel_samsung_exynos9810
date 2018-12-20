@@ -610,21 +610,24 @@ static int __dev_map_hash_update_elem(struct net *net, struct bpf_map *map,
 	struct bpf_devmap_val val = { };
 	u32 idx = *(u32 *)key;
 	unsigned long flags;
+	int err = -EEXIST;
 
 	memcpy(&val, value, map->value_size);
 
 	if (unlikely(map_flags > BPF_EXIST || !val.ifindex))
 		return -EINVAL;
 
+	spin_lock_irqsave(&dtab->index_lock, flags);
+
 	old_dev = __dev_map_hash_lookup_elem_dtab(map, idx);
 	if (old_dev && (map_flags & BPF_NOEXIST))
-		return -EEXIST;
+		goto out_err;
 
 	dev = __dev_map_alloc_node(net, dtab, &val, idx);
-	if (IS_ERR(dev))
-		return PTR_ERR(dev);
-
-	spin_lock_irqsave(&dtab->index_lock, flags);
+	if (IS_ERR(dev)) {
+		err = PTR_ERR(dev);
+		goto out_err;
+	}
 
 	if (old_dev) {
 		hlist_del_rcu(&old_dev->index_hlist);
@@ -645,6 +648,10 @@ static int __dev_map_hash_update_elem(struct net *net, struct bpf_map *map,
 		call_rcu(&old_dev->rcu, __dev_map_entry_free);
 
 	return 0;
+
+out_err:
+	spin_unlock_irqrestore(&dtab->index_lock, flags);
+	return err;
 }
 
 static int dev_map_hash_update_elem(struct bpf_map *map, void *key, void *value,
