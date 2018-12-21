@@ -160,6 +160,15 @@ enum bpf_attach_type {
  */
 #define BPF_F_STRICT_ALIGNMENT	(1U << 0)
 
+/* If BPF_F_ANY_ALIGNMENT is used in BPF_PROG_LOAD, the verifier allows
+ * any alignment. On platforms with strict alignment requirements for loads
+ * and stores, this disables alignment checking and enforcement.
+ *
+ * It is primarily intended for verifier tests where an unaligned access
+ * would otherwise mask the context or memory-access condition being tested.
+ */
+#define BPF_F_ANY_ALIGNMENT	(1U << 1)
+
 #define BPF_PSEUDO_MAP_FD	1
 
 /* flags for BPF_MAP_UPDATE_ELEM command */
