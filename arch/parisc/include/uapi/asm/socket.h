@@ -101,4 +101,6 @@
 
 #define SO_ZEROCOPY		0x4035
 
+#define SO_BINDTOIFINDEX	0x4037
+
 #endif /* _UAPI_ASM_SOCKET_H */

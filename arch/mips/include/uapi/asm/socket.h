@@ -118,4 +118,6 @@
 
 #define SO_ZEROCOPY		60
 
+#define SO_BINDTOIFINDEX	62
+
 #endif /* _UAPI_ASM_SOCKET_H */

@@ -2485,6 +2485,7 @@ bool sk_net_capable(const struct sock *sk, int cap);
 
 void sk_error_report(struct sock *sk);
 void sock_def_readable(struct sock *sk);
+int sock_bindtoindex(struct sock *sk, int ifindex, bool lock_sk);
 
 void sk_get_meminfo(const struct sock *sk, u32 *meminfo);
 
