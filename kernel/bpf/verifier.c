@@ -1019,7 +1019,8 @@ static int check_subprogs(struct bpf_verifier_env *env)
 		subprog_end = subprog[cur_subprog + 1].start;
 	for (i = 0; i < insn_cnt; i++) {
 		u8 code = insn[i].code;
-		if (BPF_CLASS(code) != BPF_JMP)
+		if (BPF_CLASS(code) != BPF_JMP &&
+		    BPF_CLASS(code) != BPF_JMP32)
 			goto next;
 		if (BPF_OP(code) == BPF_EXIT || BPF_OP(code) == BPF_CALL)
 			goto next;
@@ -4316,14 +4317,31 @@ static void find_good_pkt_pointers(struct bpf_verifier_state *vstate,
  * -1 - unknown.
  * Example: "if (reg < 5)" is unknown when register value range is [0,10].
  */
-static int is_branch_taken(struct bpf_reg_state *reg, u64 val, u8 opcode)
+static int is_branch_taken(struct bpf_reg_state *reg, u64 val, u8 opcode,
+			   bool is_jmp32)
 {
+	struct bpf_reg_state reg_lo;
 	s64 sval;
 
 	if (__is_pointer_value(false, reg))
 		return -1;
 
-	sval = (s64)val;
+	if (is_jmp32) {
+		reg_lo = *reg;
+		reg = &reg_lo;
+		coerce_reg_to_size(reg, 4);
+		if ((reg->umax_value ^ reg->umin_value) & (1ULL << 31)) {
+			reg->smin_value = S32_MIN;
+			reg->smax_value = S32_MAX;
+		}
+		reg->smin_value = (s64)(s32)reg->smin_value;
+		reg->smax_value = (s64)(s32)reg->smax_value;
+		val = (u32)val;
+		sval = (s64)(s32)val;
+	} else {
+		sval = (s64)val;
+	}
+
 	switch (opcode) {
 	case BPF_JEQ:
 		if (tnum_is_const(reg->var_off))
@@ -4348,7 +4366,7 @@ static int is_branch_taken(struct bpf_reg_state *reg, u64 val, u8 opcode)
 	case BPF_JSGT:
 		if (reg->smin_value > sval)
 			return 1;
-		if (reg->smax_value < sval)
+		if (reg->smax_value <= sval)
 			return 0;
 		break;
 	case BPF_JLT:
@@ -4391,6 +4409,24 @@ static int is_branch_taken(struct bpf_reg_state *reg, u64 val, u8 opcode)
 	return -1;
 }
 
+static u64 gen_hi_min(struct tnum var)
+{
+	return var.value & ~0xffffffffULL;
+}
+
+static u64 gen_hi_max(struct tnum var)
+{
+	return (var.value | var.mask) & ~0xffffffffULL;
+}
+
+static bool cmp_val_with_extended_s64(s64 sval, struct bpf_reg_state *reg)
+{
+	return ((s32)sval >= 0 &&
+		reg->smin_value >= 0 && reg->smax_value <= S32_MAX) ||
+	       ((s32)sval < 0 &&
+		reg->smax_value <= 0 && reg->smin_value >= S32_MIN);
+}
+
 /* Adjusts the register min/max values in the case that the dst_reg is the
  * variable register that we are working on, and src_reg is a constant or we're
  * simply doing a BPF_K check.
@@ -4398,21 +4434,31 @@ static int is_branch_taken(struct bpf_reg_state *reg, u64 val, u8 opcode)
  */
 static void reg_set_min_max(struct bpf_reg_state *true_reg,
 			    struct bpf_reg_state *false_reg, u64 val,
-			    u8 opcode)
+			    u8 opcode, bool is_jmp32)
 {
 	s64 sval;
 
 	if (__is_pointer_value(false, false_reg))
 		return;
 
-	sval = (s64)val;
+	val = is_jmp32 ? (u32)val : val;
+	sval = is_jmp32 ? (s64)(s32)val : (s64)val;
+
 	switch (opcode) {
 	case BPF_JEQ:
 	case BPF_JNE: {
 		struct bpf_reg_state *reg =
 			opcode == BPF_JEQ ? true_reg : false_reg;
 
-		__mark_reg_known(reg, val);
+		if (is_jmp32) {
+			u64 hi_mask = ~0xffffffffULL;
+			u64 old_v = reg->var_off.value;
+
+			reg->var_off.value = (old_v & hi_mask) | val;
+			reg->var_off.mask &= hi_mask;
+		} else {
+			__mark_reg_known(reg, val);
+		}
 		break;
 	}
 	case BPF_JSET:
@@ -4427,6 +4473,10 @@ static void reg_set_min_max(struct bpf_reg_state *true_reg,
 		u64 false_umax = opcode == BPF_JGT ? val : val - 1;
 		u64 true_umin = opcode == BPF_JGT ? val + 1 : val;
 
+		if (is_jmp32) {
+			false_umax += gen_hi_max(false_reg->var_off);
+			true_umin += gen_hi_min(true_reg->var_off);
+		}
 		false_reg->umax_value = min(false_reg->umax_value, false_umax);
 		true_reg->umin_value = max(true_reg->umin_value, true_umin);
 		break;
@@ -4436,8 +4486,12 @@ static void reg_set_min_max(struct bpf_reg_state *true_reg,
 		s64 false_smax = opcode == BPF_JSGT ? sval : sval - 1;
 		s64 true_smin = opcode == BPF_JSGT ? sval + 1 : sval;
 
-		false_reg->smax_value = min(false_reg->smax_value, false_smax);
-		true_reg->smin_value = max(true_reg->smin_value, true_smin);
+		if (!is_jmp32 || cmp_val_with_extended_s64(sval, false_reg)) {
+			false_reg->smax_value = min(false_reg->smax_value,
+						 false_smax);
+			true_reg->smin_value = max(true_reg->smin_value,
+						 true_smin);
+		}
 		break;
 	}
 	case BPF_JLE:
@@ -4445,6 +4499,10 @@ static void reg_set_min_max(struct bpf_reg_state *true_reg,
 		u64 false_umin = opcode == BPF_JLT ? val : val + 1;
 		u64 true_umax = opcode == BPF_JLT ? val - 1 : val;
 
+		if (is_jmp32) {
+			false_umin += gen_hi_min(false_reg->var_off);
+			true_umax += gen_hi_max(true_reg->var_off);
+		}
 		false_reg->umin_value = max(false_reg->umin_value, false_umin);
 		true_reg->umax_value = min(true_reg->umax_value, true_umax);
 		break;
@@ -4454,8 +4512,12 @@ static void reg_set_min_max(struct bpf_reg_state *true_reg,
 		s64 false_smin = opcode == BPF_JSLT ? sval : sval + 1;
 		s64 true_smax = opcode == BPF_JSLT ? sval - 1 : sval;
 
-		false_reg->smin_value = max(false_reg->smin_value, false_smin);
-		true_reg->smax_value = min(true_reg->smax_value, true_smax);
+		if (!is_jmp32 || cmp_val_with_extended_s64(sval, false_reg)) {
+			false_reg->smin_value = max(false_reg->smin_value,
+						 false_smin);
+			true_reg->smax_value = min(true_reg->smax_value,
+						 true_smax);
+		}
 		break;
 	}
 	default:
@@ -4470,24 +4532,33 @@ static void reg_set_min_max(struct bpf_reg_state *true_reg,
 	__update_reg_bounds(true_reg);
 }
 
-/* Same as above when dst is constant and src is variable. */
 static void reg_set_min_max_inv(struct bpf_reg_state *true_reg,
 				struct bpf_reg_state *false_reg, u64 val,
-				u8 opcode)
+				u8 opcode, bool is_jmp32)
 {
 	s64 sval;
 
 	if (__is_pointer_value(false, false_reg))
 		return;
 
-	sval = (s64)val;
+	val = is_jmp32 ? (u32)val : val;
+	sval = is_jmp32 ? (s64)(s32)val : (s64)val;
+
 	switch (opcode) {
 	case BPF_JEQ:
 	case BPF_JNE: {
 		struct bpf_reg_state *reg =
 			opcode == BPF_JEQ ? true_reg : false_reg;
 
-		__mark_reg_known(reg, val);
+		if (is_jmp32) {
+			u64 hi_mask = ~0xffffffffULL;
+			u64 old_v = reg->var_off.value;
+
+			reg->var_off.value = (old_v & hi_mask) | val;
+			reg->var_off.mask &= hi_mask;
+		} else {
+			__mark_reg_known(reg, val);
+		}
 		break;
 	}
 	case BPF_JSET:
@@ -4502,6 +4573,10 @@ static void reg_set_min_max_inv(struct bpf_reg_state *true_reg,
 		u64 false_umin = opcode == BPF_JGT ? val : val + 1;
 		u64 true_umax = opcode == BPF_JGT ? val - 1 : val;
 
+		if (is_jmp32) {
+			false_umin += gen_hi_min(false_reg->var_off);
+			true_umax += gen_hi_max(true_reg->var_off);
+		}
 		false_reg->umin_value = max(false_reg->umin_value, false_umin);
 		true_reg->umax_value = min(true_reg->umax_value, true_umax);
 		break;
@@ -4511,8 +4586,12 @@ static void reg_set_min_max_inv(struct bpf_reg_state *true_reg,
 		s64 false_smin = opcode == BPF_JSGT ? sval : sval + 1;
 		s64 true_smax = opcode == BPF_JSGT ? sval - 1 : sval;
 
-		false_reg->smin_value = max(false_reg->smin_value, false_smin);
-		true_reg->smax_value = min(true_reg->smax_value, true_smax);
+		if (!is_jmp32 || cmp_val_with_extended_s64(sval, false_reg)) {
+			false_reg->smin_value = max(false_reg->smin_value,
+						 false_smin);
+			true_reg->smax_value = min(true_reg->smax_value,
+						 true_smax);
+		}
 		break;
 	}
 	case BPF_JLE:
@@ -4520,6 +4599,10 @@ static void reg_set_min_max_inv(struct bpf_reg_state *true_reg,
 		u64 false_umax = opcode == BPF_JLT ? val : val - 1;
 		u64 true_umin = opcode == BPF_JLT ? val + 1 : val;
 
+		if (is_jmp32) {
+			false_umax += gen_hi_max(false_reg->var_off);
+			true_umin += gen_hi_min(true_reg->var_off);
+		}
 		false_reg->umax_value = min(false_reg->umax_value, false_umax);
 		true_reg->umin_value = max(true_reg->umin_value, true_umin);
 		break;
@@ -4529,8 +4612,12 @@ static void reg_set_min_max_inv(struct bpf_reg_state *true_reg,
 		s64 false_smax = opcode == BPF_JSLT ? sval : sval - 1;
 		s64 true_smin = opcode == BPF_JSLT ? sval + 1 : sval;
 
-		false_reg->smax_value = min(false_reg->smax_value, false_smax);
-		true_reg->smin_value = max(true_reg->smin_value, true_smin);
+		if (!is_jmp32 || cmp_val_with_extended_s64(sval, false_reg)) {
+			false_reg->smax_value = min(false_reg->smax_value,
+						 false_smax);
+			true_reg->smin_value = max(true_reg->smin_value,
+						 true_smin);
+		}
 		break;
 	}
 	default:
@@ -4668,7 +4755,8 @@ static bool try_match_pkt_pointers(const struct bpf_insn *insn,
 				   struct bpf_verifier_state *this_branch,
 				   struct bpf_verifier_state *other_branch)
 {
-	if (BPF_SRC(insn->code) != BPF_X)
+	if (BPF_CLASS(insn->code) == BPF_JMP32 ||
+	    BPF_SRC(insn->code) != BPF_X)
 		return false;
 
 	switch (BPF_OP(insn->code)) {
@@ -4762,21 +4850,21 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	struct bpf_verifier_state *other_branch;
 	struct bpf_reg_state *regs = this_branch->frame[this_branch->curframe]->regs;
 	struct bpf_reg_state *dst_reg, *other_branch_regs;
+	bool is_jmp32 = BPF_CLASS(insn->code) == BPF_JMP32;
 	u8 opcode = BPF_OP(insn->code);
 	int err;
 
-	if (opcode > BPF_JSLE) {
-		verbose(env, "invalid BPF_JMP opcode %x\n", opcode);
+	if (opcode == BPF_JA || opcode > BPF_JSLE) {
+		verbose(env, "invalid BPF_JMP/JMP32 opcode %x\n", opcode);
 		return -EINVAL;
 	}
 
 	if (BPF_SRC(insn->code) == BPF_X) {
 		if (insn->imm != 0) {
-			verbose(env, "BPF_JMP uses reserved fields\n");
+			verbose(env, "BPF_JMP/JMP32 uses reserved fields\n");
 			return -EINVAL;
 		}
 
-		/* check src1 operand */
 		err = check_reg_arg(env, insn->src_reg, SRC_OP);
 		if (err)
 			return err;
@@ -4786,14 +4874,11 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 				insn->src_reg);
 			return -EACCES;
 		}
-	} else {
-		if (insn->src_reg != BPF_REG_0) {
-			verbose(env, "BPF_JMP uses reserved fields\n");
-			return -EINVAL;
-		}
+	} else if (insn->src_reg != BPF_REG_0) {
+		verbose(env, "BPF_JMP/JMP32 uses reserved fields\n");
+		return -EINVAL;
 	}
 
-	/* check src2 operand */
 	err = check_reg_arg(env, insn->dst_reg, SRC_OP);
 	if (err)
 		return err;
@@ -4801,14 +4886,13 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	dst_reg = &regs[insn->dst_reg];
 
 	if (BPF_SRC(insn->code) == BPF_K) {
-		int pred = is_branch_taken(dst_reg, insn->imm, opcode);
+		int pred = is_branch_taken(dst_reg, insn->imm, opcode,
+					is_jmp32);
 
 		if (pred == 1) {
-			/* only follow the goto, ignore fall-through */
 			*insn_idx += insn->off;
 			return 0;
 		} else if (pred == 0) {
-			/* only follow fall-through branch */
 			return 0;
 		}
 	}
@@ -4819,55 +4903,61 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		return -EFAULT;
 
 	other_branch_regs = other_branch->frame[other_branch->curframe]->regs;
-	/* detect if we are comparing against a constant value so we can adjust
-	 * our min/max values for our dst register.
-	 * this is only legit if both are scalars (or pointers to the same
-	 * object, I suppose, but we don't support that right now), because
-	 * otherwise the different base pointers mean the offsets aren't
-	 * comparable.
-	 */
 	if (BPF_SRC(insn->code) == BPF_X) {
+		struct bpf_reg_state *src_reg = &regs[insn->src_reg];
+		struct bpf_reg_state lo_reg0 = *dst_reg;
+		struct bpf_reg_state lo_reg1 = *src_reg;
+		struct bpf_reg_state *dst_lo = dst_reg;
+		struct bpf_reg_state *src_lo = src_reg;
+
+		if (is_jmp32) {
+			dst_lo = &lo_reg0;
+			src_lo = &lo_reg1;
+			coerce_reg_to_size(dst_lo, 4);
+			coerce_reg_to_size(src_lo, 4);
+		}
+
 		if (dst_reg->type == SCALAR_VALUE &&
-		    regs[insn->src_reg].type == SCALAR_VALUE) {
-			if (tnum_is_const(regs[insn->src_reg].var_off))
-				reg_set_min_max(&other_branch_regs[insn->dst_reg],
-						dst_reg, regs[insn->src_reg].var_off.value,
-						opcode);
-			else if (tnum_is_const(dst_reg->var_off))
-				reg_set_min_max_inv(&other_branch_regs[insn->src_reg],
-						    &regs[insn->src_reg],
-						    dst_reg->var_off.value, opcode);
-			else if (opcode == BPF_JEQ || opcode == BPF_JNE)
-				/* Comparing for equality, we can combine knowledge */
-				reg_combine_min_max(&other_branch_regs[insn->src_reg],
-						    &other_branch_regs[insn->dst_reg],
-						    &regs[insn->src_reg],
-						    &regs[insn->dst_reg], opcode);
+		    src_reg->type == SCALAR_VALUE) {
+			if (tnum_is_const(src_lo->var_off))
+				reg_set_min_max(
+					&other_branch_regs[insn->dst_reg],
+					dst_reg, src_lo->var_off.value,
+					opcode, is_jmp32);
+			else if (tnum_is_const(dst_lo->var_off))
+				reg_set_min_max_inv(
+					&other_branch_regs[insn->src_reg],
+					src_reg, dst_lo->var_off.value,
+					opcode, is_jmp32);
+			else if (!is_jmp32 &&
+				 (opcode == BPF_JEQ || opcode == BPF_JNE))
+				reg_combine_min_max(
+					&other_branch_regs[insn->src_reg],
+					&other_branch_regs[insn->dst_reg],
+					src_reg, dst_reg, opcode);
 		}
 	} else if (dst_reg->type == SCALAR_VALUE) {
-		reg_set_min_max(&other_branch_regs[insn->dst_reg],
-					dst_reg, insn->imm, opcode);
+		reg_set_min_max(&other_branch_regs[insn->dst_reg], dst_reg,
+				insn->imm, opcode, is_jmp32);
 	}
 
-	/* detect if R == 0 where R is returned from bpf_map_lookup_elem() */
-	if (BPF_SRC(insn->code) == BPF_K &&
+	if (!is_jmp32 && BPF_SRC(insn->code) == BPF_K &&
 	    insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE) &&
 	    reg_type_may_be_null(dst_reg->type)) {
-		/* Mark all identical registers in each branch as either
-		 * safe or unknown depending R == 0 or R != 0 conditional.
-		 */
 		mark_ptr_or_null_regs(this_branch, insn->dst_reg,
 				      opcode == BPF_JNE);
 		mark_ptr_or_null_regs(other_branch, insn->dst_reg,
 				      opcode == BPF_JEQ);
-	} else if (!try_match_pkt_pointers(insn, dst_reg, &regs[insn->src_reg],
-					   this_branch, other_branch) &&
+	} else if (!try_match_pkt_pointers(insn, dst_reg,
+					  &regs[insn->src_reg],
+					  this_branch, other_branch) &&
 		   is_pointer_value(env, insn->dst_reg)) {
 		verbose(env, "R%d pointer comparison prohibited\n", insn->dst_reg);
 		return -EACCES;
 	}
 	if (env->log.level)
-		print_verifier_state(env, this_branch->frame[this_branch->curframe]);
+		print_verifier_state(env,
+				     this_branch->frame[this_branch->curframe]);
 	return 0;
 }
 
@@ -5187,7 +5277,8 @@ peek_stack:
 		goto check_state;
 	t = insn_stack[cur_stack - 1];
 
-	if (BPF_CLASS(insns[t].code) == BPF_JMP) {
+	if (BPF_CLASS(insns[t].code) == BPF_JMP ||
+	    BPF_CLASS(insns[t].code) == BPF_JMP32) {
 		u8 opcode = BPF_OP(insns[t].code);
 
 		if (opcode == BPF_EXIT) {
@@ -6206,11 +6297,12 @@ static int do_check(struct bpf_verifier_env *env)
 			if (err)
 				return err;
 
-		} else if (class == BPF_JMP) {
+		} else if (class == BPF_JMP || class == BPF_JMP32) {
 			u8 opcode = BPF_OP(insn->code);
 
 			if (opcode == BPF_CALL) {
-				if (BPF_SRC(insn->code) != BPF_K ||
+				if (class == BPF_JMP32 ||
+				    BPF_SRC(insn->code) != BPF_K ||
 				    insn->off != 0 ||
 				    (insn->src_reg != BPF_REG_0 &&
 				     insn->src_reg != BPF_PSEUDO_CALL) ||
@@ -6233,7 +6325,8 @@ static int do_check(struct bpf_verifier_env *env)
 					return err;
 
 			} else if (opcode == BPF_JA) {
-				if (BPF_SRC(insn->code) != BPF_K ||
+				if (class == BPF_JMP32 ||
+				    BPF_SRC(insn->code) != BPF_K ||
 				    insn->imm != 0 ||
 				    insn->src_reg != BPF_REG_0 ||
 				    insn->dst_reg != BPF_REG_0) {
@@ -6245,7 +6338,8 @@ static int do_check(struct bpf_verifier_env *env)
 				continue;
 
 			} else if (opcode == BPF_EXIT) {
-				if (BPF_SRC(insn->code) != BPF_K ||
+				if (class == BPF_JMP32 ||
+				    BPF_SRC(insn->code) != BPF_K ||
 				    insn->imm != 0 ||
 				    insn->src_reg != BPF_REG_0 ||
 				    insn->dst_reg != BPF_REG_0) {
