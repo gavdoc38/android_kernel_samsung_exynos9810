@@ -333,7 +333,8 @@ static int bpf_adj_branches(struct bpf_prog *prog, u32 pos, u32 delta,
 		}
 
 		code = insn->code;
-		if (BPF_CLASS(code) != BPF_JMP)
+		if (BPF_CLASS(code) != BPF_JMP &&
+		    BPF_CLASS(code) != BPF_JMP32)
 			continue;
 		if (BPF_OP(code) == BPF_EXIT)
 			continue;
