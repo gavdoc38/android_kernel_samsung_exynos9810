@@ -423,6 +423,7 @@ enum bpf_reg_type {
 	PTR_TO_TCP_SOCK,	 /* reg points to struct tcp_sock */
 	PTR_TO_TCP_SOCK_OR_NULL, /* reg points to struct tcp_sock or NULL */
 	PTR_TO_TP_BUFFER,	 /* reg points to a writable raw tp's buffer */
+	PTR_TO_XDP_SOCK,	 /* reg points to struct xdp_sock */
 	PTR_TO_BTF_ID,		 /* reg points to kernel struct */
 	PTR_TO_BTF_ID_OR_NULL, /* reg points to kernel struct or NULL */
 	PTR_TO_MEM,		 /* reg points to valid memory region */
@@ -1798,6 +1799,14 @@ u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
 				struct bpf_insn *insn_buf,
 				struct bpf_prog *prog,
 				u32 *target_size);
+bool bpf_xdp_sock_is_valid_access(int off, int size,
+				  enum bpf_access_type type,
+				  struct bpf_insn_access_aux *info);
+u32 bpf_xdp_sock_convert_ctx_access(enum bpf_access_type type,
+				    const struct bpf_insn *si,
+				    struct bpf_insn *insn_buf,
+				    struct bpf_prog *prog,
+				    u32 *target_size);
 #else
 static inline bool bpf_sock_common_is_valid_access(int off, int size,
 						   enum bpf_access_type type,
@@ -1816,6 +1825,20 @@ static inline u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
 					      struct bpf_insn *insn_buf,
 					      struct bpf_prog *prog,
 					      u32 *target_size)
+{
+	return 0;
+}
+
+static inline bool bpf_xdp_sock_is_valid_access(
+	int off, int size, enum bpf_access_type type,
+	struct bpf_insn_access_aux *info)
+{
+	return false;
+}
+
+static inline u32 bpf_xdp_sock_convert_ctx_access(
+	enum bpf_access_type type, const struct bpf_insn *si,
+	struct bpf_insn *insn_buf, struct bpf_prog *prog, u32 *target_size)
 {
 	return 0;
 }

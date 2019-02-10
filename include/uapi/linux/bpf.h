@@ -2158,15 +2158,15 @@ struct bpf_sock {
 	__u32 protocol;
 	__u32 mark;
 	__u32 priority;
-	__u32 src_ip4;		/* Allows 1,2,4-byte read.
-				 * Stored in network byte order.
-				 */
-	__u32 src_ip6[4];	/* Allows 1,2,4-byte read.
-				 * Stored in network byte order.
-				 */
-	__u32 src_port;		/* Allows 4-byte read.
-				 * Stored in host byte order
-				 */
+	/* IP address also allows 1 and 2 bytes access */
+	__u32 src_ip4;
+	__u32 src_ip6[4];
+	__u32 src_port;		/* host byte order */
+	__u32 dst_port;		/* network byte order */
+	__u32 dst_ip4;
+	__u32 dst_ip6[4];
+	__u32 state;
+	__s32 rx_queue_mapping;
 };
 
 struct bpf_tcp_sock {
@@ -2231,6 +2231,10 @@ struct bpf_sock_tuple {
 	};
 };
 
+struct bpf_xdp_sock {
+	__u32 queue_id;
+};
+
 #define XDP_PACKET_HEADROOM 256
 
 /* User return codes for XDP prog type.
@@ -2287,6 +2291,17 @@ enum sk_action {
 struct sk_msg_md {
 	__bpf_md_ptr(void *, data);
 	__bpf_md_ptr(void *, data_end);
+
+	__u32 family;
+	__u32 remote_ip4;	/* Stored in network byte order */
+	__u32 local_ip4;	/* Stored in network byte order */
+	__u32 remote_ip6[4];	/* Stored in network byte order */
+	__u32 local_ip6[4];	/* Stored in network byte order */
+	__u32 remote_port;	/* Stored in network byte order */
+	__u32 local_port;	/* stored in host byte order */
+	__u32 size;		/* Total size of sk_msg */
+
+	__bpf_md_ptr(struct bpf_sock *, sk); /* current socket */
 };
 
 struct sk_reuseport_md {
@@ -2455,6 +2470,7 @@ struct bpf_sock_addr {
 	__u32 msg_src_ip6[4];	/* Allows 1,2,4-byte read an 4-byte write.
 				 * Stored in network byte order.
 				 */
+	__bpf_md_ptr(struct bpf_sock *, sk);
 };
 
 /* User bpf_sock_ops struct to access socket values and specify request ops
@@ -2899,6 +2915,9 @@ struct bpf_sysctl {
 	__u32	write;		/* Sysctl is being read (= 0) or written (= 1).
 				 * Allows 1,2,4-byte read, but no write.
 				 */
+	__u32	file_pos;	/* Sysctl file position to read from, write to.
+				 * Allows 1,2,4-byte read an 4-byte write.
+				 */
 };
 
 struct bpf_func_info {
@@ -2946,8 +2965,7 @@ struct bpf_sk_lookup {
 	__u32 protocol;		/* IP protocol (IPPROTO_TCP, IPPROTO_UDP) */
 	__u32 remote_ip4;	/* Network byte order */
 	__u32 remote_ip6[4];	/* Network byte order */
-	__be16 remote_port;	/* Network byte order */
-	__u16 :16;		/* Zero padding */
+	__u32 remote_port;	/* Network byte order */
 	__u32 local_ip4;	/* Network byte order */
 	__u32 local_ip6[4];	/* Network byte order */
 	__u32 local_port;	/* Host byte order */
