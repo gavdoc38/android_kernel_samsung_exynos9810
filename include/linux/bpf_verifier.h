@@ -38,6 +38,7 @@ enum bpf_reg_liveness {
 	REG_LIVE_NONE = 0, /* reg hasn't been read or written this branch */
 	REG_LIVE_READ, /* reg was read, so we're sensitive to initial value */
 	REG_LIVE_WRITTEN, /* reg was written first, screening off later reads */
+	REG_LIVE_DONE = 4, /* liveness won't be updating this register anymore */
 };
 
 struct bpf_reg_state {
@@ -164,6 +165,7 @@ struct bpf_verifier_state {
 struct bpf_verifier_state_list {
 	struct bpf_verifier_state state;
 	struct bpf_verifier_state_list *next;
+	int miss_cnt, hit_cnt;
 };
 
 /* Possible states for alu_state member. */
@@ -244,6 +246,7 @@ struct bpf_verifier_env {
 	bool strict_alignment;		/* perform strict pointer alignment checks */
 	struct bpf_verifier_state *cur_state; /* current verifier state */
 	struct bpf_verifier_state_list **explored_states; /* search pruning optimization */
+	struct bpf_verifier_state_list *free_list;
 	const struct bpf_ext_analyzer_ops *analyzer_ops; /* external analyzer ops */
 	void *analyzer_priv; /* pointer to external analyzer's private data */
 	struct bpf_map *used_maps[MAX_USED_MAPS]; /* array of map's used by eBPF program */
