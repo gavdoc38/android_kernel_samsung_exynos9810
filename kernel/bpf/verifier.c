@@ -9545,15 +9545,18 @@ static int check_cfg(struct bpf_verifier_env *env)
 	if (ret < 0)
 		return ret;
 
-	insn_state = env->cfg.insn_state = kcalloc(insn_cnt, sizeof(int), GFP_KERNEL);
+	insn_state = kvcalloc(insn_cnt, sizeof(int), GFP_KERNEL);
 	if (!insn_state)
 		return -ENOMEM;
+	env->cfg.insn_state = insn_state;
 
-	insn_stack = env->cfg.insn_stack = kcalloc(insn_cnt, sizeof(int), GFP_KERNEL);
+	insn_stack = kvcalloc(insn_cnt, sizeof(int), GFP_KERNEL);
 	if (!insn_stack) {
-		kfree(insn_state);
+		kvfree(insn_state);
+		env->cfg.insn_state = NULL;
 		return -ENOMEM;
 	}
+	env->cfg.insn_stack = insn_stack;
 
 	insn_state[0] = DISCOVERED; /* mark 1st insn as discovered */
 	insn_stack[0] = 0; /* 0 is the first instruction */
@@ -9658,8 +9661,8 @@ check_state:
 	ret = 0; /* cfg looks good */
 
 err_free:
-	kfree(insn_state);
-	kfree(insn_stack);
+	kvfree(insn_state);
+	kvfree(insn_stack);
 	env->cfg.insn_state = env->cfg.insn_stack = NULL;
 	return ret;
 }
@@ -13190,9 +13193,9 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr)
 	if (is_priv)
 		env->test_state_freq = attr->prog_flags & BPF_F_TEST_STATE_FREQ;
 
-	env->explored_states = kcalloc(state_htab_size(env),
-				       sizeof(struct bpf_verifier_state_list *),
-				       GFP_USER);
+	env->explored_states =
+		kvcalloc(state_htab_size(env),
+			 sizeof(struct bpf_verifier_state_list *), GFP_USER);
 	ret = -ENOMEM;
 	if (!env->explored_states)
 		goto skip_full_check;
@@ -13227,7 +13230,7 @@ skip_full_check:
 	while (!pop_stack(env, NULL, NULL))
 		;
 	free_states(env);
-	kfree(env->explored_states);
+	kvfree(env->explored_states);
 	env->explored_states = NULL;
 
 	if (ret == 0)
@@ -13364,9 +13367,9 @@ int bpf_analyzer(struct bpf_prog *prog, const struct bpf_ext_analyzer_ops *ops,
 	if (!IS_ENABLED(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS))
 		env->strict_alignment = true;
 
-	env->explored_states = kcalloc(env->prog->len,
-				       sizeof(struct bpf_verifier_state_list *),
-				       GFP_KERNEL);
+	env->explored_states =
+		kvcalloc(env->prog->len,
+			 sizeof(struct bpf_verifier_state_list *), GFP_KERNEL);
 	ret = -ENOMEM;
 	if (!env->explored_states)
 		goto skip_full_check;
@@ -13387,7 +13390,7 @@ skip_full_check:
 	while (!pop_stack(env, NULL, NULL))
 		;
 	free_states(env);
-	kfree(env->explored_states);
+	kvfree(env->explored_states);
 	env->explored_states = NULL;
 
 	mutex_unlock(&bpf_verifier_lock);
