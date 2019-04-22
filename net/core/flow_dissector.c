@@ -410,6 +410,7 @@ static void __skb_flow_bpf_to_target(const struct bpf_flow_keys *flow_keys,
 	struct flow_dissector_key_basic *key_basic;
 	struct flow_dissector_key_addrs *key_addrs;
 	struct flow_dissector_key_ports *key_ports;
+	struct flow_dissector_key_tags *key_tags;
 
 	key_control = skb_flow_dissector_target(flow_dissector,
 						FLOW_DISSECTOR_KEY_CONTROL,
@@ -454,10 +455,47 @@ static void __skb_flow_bpf_to_target(const struct bpf_flow_keys *flow_keys,
 		key_ports->src = flow_keys->sport;
 		key_ports->dst = flow_keys->dport;
 	}
+
+	if (dissector_uses_key(flow_dissector,
+			       FLOW_DISSECTOR_KEY_FLOW_LABEL)) {
+		key_tags = skb_flow_dissector_target(
+			flow_dissector, FLOW_DISSECTOR_KEY_FLOW_LABEL,
+			target_container);
+		key_tags->flow_label = ntohl(flow_keys->flow_label);
+	}
+}
+
+bool bpf_flow_dissect(struct bpf_prog *prog, struct bpf_flow_dissector *ctx,
+		      __be16 proto, int nhoff, int hlen, unsigned int flags)
+{
+	struct bpf_flow_keys *flow_keys = ctx->flow_keys;
+	u32 result;
+
+	memset(flow_keys, 0, sizeof(*flow_keys));
+	flow_keys->n_proto = proto;
+	flow_keys->nhoff = nhoff;
+	flow_keys->thoff = flow_keys->nhoff;
+
+	BUILD_BUG_ON((int)BPF_FLOW_DISSECTOR_F_PARSE_1ST_FRAG !=
+		     (int)FLOW_DISSECTOR_F_PARSE_1ST_FRAG);
+	BUILD_BUG_ON((int)BPF_FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL !=
+		     (int)FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL);
+	BUILD_BUG_ON((int)BPF_FLOW_DISSECTOR_F_STOP_AT_ENCAP !=
+		     (int)FLOW_DISSECTOR_F_STOP_AT_ENCAP);
+	flow_keys->flags = flags;
+
+	result = bpf_prog_run_pin_on_cpu(prog, ctx);
+
+	flow_keys->nhoff = clamp_t(u16, flow_keys->nhoff, nhoff, hlen);
+	flow_keys->thoff = clamp_t(u16, flow_keys->thoff,
+				   flow_keys->nhoff, hlen);
+
+	return result == BPF_OK;
 }
 
 /**
  * __skb_flow_dissect - extract the flow_keys struct and return it
+ * @net: associated network namespace, derived from @skb if NULL
  * @skb: sk_buff to extract the flow from, can be NULL if the rest are specified
  * @flow_dissector: list of keys to dissect
  * @target_container: target structure to put dissected values into
@@ -472,7 +510,8 @@ static void __skb_flow_bpf_to_target(const struct bpf_flow_keys *flow_keys,
  *
  * Caller must take care of zeroing target container memory.
  */
-bool __skb_flow_dissect(const struct sk_buff *skb,
+bool __skb_flow_dissect(const struct net *net,
+			const struct sk_buff *skb,
 			struct flow_dissector *flow_dissector,
 			void *target_container,
 			void *data, __be16 proto, int nhoff, int hlen,
@@ -486,7 +525,6 @@ bool __skb_flow_dissect(const struct sk_buff *skb,
 	struct flow_dissector_key_tags *key_tags;
 	struct flow_dissector_key_vlan *key_vlan;
 	bool skip_vlan = false;
-	struct bpf_prog_array *run_array;
 	u8 ip_proto = 0;
 	bool ret;
 
@@ -512,66 +550,52 @@ bool __skb_flow_dissect(const struct sk_buff *skb,
 					      FLOW_DISSECTOR_KEY_BASIC,
 					      target_container);
 
-	rcu_read_lock();
-	run_array = skb ?
-		rcu_dereference(init_net.bpf.run_array[NETNS_BPF_FLOW_DISSECTOR]) :
-		NULL;
-	if (!run_array && skb) {
-		struct net *net = NULL;
-
+	if (skb && !net) {
 		if (skb->dev)
 			net = dev_net(skb->dev);
 		else if (skb->sk)
 			net = sock_net(skb->sk);
-		else
-			WARN_ON_ONCE(1);
-
-		if (net)
-			run_array = rcu_dereference(
-				net->bpf.run_array[NETNS_BPF_FLOW_DISSECTOR]);
 	}
-	if (run_array) {
-		/* Note that even though the const qualifier is discarded
-		 * throughout the execution of the BPF program, all changes(the
-		 * control block) are reverted after the BPF program returns.
-		 * Therefore, __skb_flow_dissect does not alter the skb.
-		 */
-		struct bpf_flow_keys flow_keys = {};
-		struct bpf_skb_data_end cb_saved;
-		struct bpf_skb_data_end *cb;
-		struct bpf_prog *prog;
-		u32 result;
 
-		cb = (struct bpf_skb_data_end *)skb->cb;
+	WARN_ON_ONCE(!net);
+	if (net) {
+		enum netns_bpf_attach_type type = NETNS_BPF_FLOW_DISSECTOR;
+		struct bpf_prog_array *run_array;
 
-		/* Save Control Block */
-		memcpy(&cb_saved, cb, sizeof(cb_saved));
-		memset(cb, 0, sizeof(cb_saved));
+		rcu_read_lock();
+		run_array = rcu_dereference(init_net.bpf.run_array[type]);
+		if (!run_array)
+			run_array = rcu_dereference(net->bpf.run_array[type]);
 
-		/* Pass parameters to the BPF program */
-		cb->qdisc_cb.flow_keys = &flow_keys;
-		flow_keys.nhoff = nhoff;
-		if (flags & FLOW_DISSECTOR_F_PARSE_1ST_FRAG)
-			flow_keys.flags |= BPF_FLOW_DISSECTOR_F_PARSE_1ST_FRAG;
-		if (flags & FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL)
-			flow_keys.flags |= BPF_FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL;
-		if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP)
-			flow_keys.flags |= BPF_FLOW_DISSECTOR_F_STOP_AT_ENCAP;
+		if (run_array) {
+			struct bpf_flow_keys flow_keys;
+			struct bpf_flow_dissector ctx = {
+				.flow_keys = &flow_keys,
+				.data = data,
+				.data_end = data + hlen,
+			};
+			__be16 n_proto = proto;
+			struct bpf_prog *prog;
 
-		bpf_compute_data_pointers((struct sk_buff *)skb);
-		prog = READ_ONCE(run_array->items[0].prog);
-		result = bpf_prog_run_pin_on_cpu(prog, skb);
+			if (skb) {
+				ctx.skb = skb;
+				/* proto might be the VLAN protocol that was
+				 * pulled from the packet. The BPF ABI expects
+				 * the original skb protocol instead.
+				 */
+				n_proto = skb->protocol;
+			}
 
-		/* Restore state */
-		memcpy(cb, &cb_saved, sizeof(cb_saved));
-
-		__skb_flow_bpf_to_target(&flow_keys, flow_dissector,
-					 target_container);
-		key_control->thoff = min_t(u16, key_control->thoff, skb->len);
+			prog = READ_ONCE(run_array->items[0].prog);
+			ret = bpf_flow_dissect(prog, &ctx, n_proto, nhoff,
+					       hlen, flags);
+			__skb_flow_bpf_to_target(&flow_keys, flow_dissector,
+						 target_container);
+			rcu_read_unlock();
+			return ret;
+		}
 		rcu_read_unlock();
-		return result == BPF_OK;
 	}
-	rcu_read_unlock();
 
 	if (dissector_uses_key(flow_dissector,
 			       FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
@@ -1065,8 +1089,8 @@ u32 __skb_get_hash_symmetric(struct sk_buff *skb)
 	__flow_hash_secret_init();
 
 	memset(&keys, 0, sizeof(keys));
-	__skb_flow_dissect(skb, &flow_keys_dissector_symmetric, &keys,
-			   NULL, 0, 0, 0,
+	__skb_flow_dissect(NULL, skb, &flow_keys_dissector_symmetric,
+			   &keys, NULL, 0, 0, 0,
 			   FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL);
 
 	return __flow_hash_from_keys(&keys, &hashrnd);

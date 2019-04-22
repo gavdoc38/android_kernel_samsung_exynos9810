@@ -812,7 +812,7 @@ static bool ixgbevf_add_rx_frag(struct ixgbevf_ring *rx_ring,
 	/* we need the header to contain the greater of either ETH_HLEN or
 	 * 60 bytes if the skb->len is less than 60 for skb_pad.
 	 */
-	pull_len = eth_get_headlen(va, IXGBEVF_RX_HDR_SIZE);
+	pull_len = eth_get_headlen(skb->dev, va, IXGBEVF_RX_HDR_SIZE);
 
 	/* align pull length to size of long to optimize memcpy performance */
 	memcpy(__skb_put(skb, pull_len), va, ALIGN(pull_len, sizeof(long)));

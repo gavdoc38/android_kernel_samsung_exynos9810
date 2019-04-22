@@ -674,7 +674,7 @@ static struct sk_buff *mlx4_en_rx_skb(struct mlx4_en_priv *priv,
 		}
 		skb_shinfo(skb)->nr_frags = used_frags;
 
-		pull_len = eth_get_headlen(va, SMALL_PACKET_SIZE);
+		pull_len = eth_get_headlen(skb->dev, va, SMALL_PACKET_SIZE);
 		/* Copy headers into the skb linear buffer */
 		memcpy(skb->data, va, pull_len);
 		skb->tail += pull_len;

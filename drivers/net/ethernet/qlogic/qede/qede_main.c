@@ -1500,7 +1500,8 @@ alloc_skb:
 					len, rxq->rx_buf_seg_size);
 
 			va = skb_frag_address(frag);
-			pull_len = eth_get_headlen(va, QEDE_RX_HDR_SIZE);
+			pull_len = eth_get_headlen(skb->dev, va,
+						   QEDE_RX_HDR_SIZE);
 
 			/* Align the pull_len to optimize memcpy */
 			memcpy(skb->data, va, ALIGN(pull_len, sizeof(long)));

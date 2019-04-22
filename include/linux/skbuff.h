@@ -1218,7 +1218,12 @@ void skb_flow_dissector_init(struct flow_dissector *flow_dissector,
 			     const struct flow_dissector_key *key,
 			     unsigned int key_count);
 
-bool __skb_flow_dissect(const struct sk_buff *skb,
+struct bpf_flow_dissector;
+bool bpf_flow_dissect(struct bpf_prog *prog, struct bpf_flow_dissector *ctx,
+		      __be16 proto, int nhoff, int hlen, unsigned int flags);
+
+bool __skb_flow_dissect(const struct net *net,
+			const struct sk_buff *skb,
 			struct flow_dissector *flow_dissector,
 			void *target_container,
 			void *data, __be16 proto, int nhoff, int hlen,
@@ -1228,8 +1233,8 @@ static inline bool skb_flow_dissect(const struct sk_buff *skb,
 				    struct flow_dissector *flow_dissector,
 				    void *target_container, unsigned int flags)
 {
-	return __skb_flow_dissect(skb, flow_dissector, target_container,
-				  NULL, 0, 0, 0, flags);
+	return __skb_flow_dissect(NULL, skb, flow_dissector,
+				  target_container, NULL, 0, 0, 0, flags);
 }
 
 static inline bool skb_flow_dissect_flow_keys(const struct sk_buff *skb,
@@ -1237,18 +1242,18 @@ static inline bool skb_flow_dissect_flow_keys(const struct sk_buff *skb,
 					      unsigned int flags)
 {
 	memset(flow, 0, sizeof(*flow));
-	return __skb_flow_dissect(skb, &flow_keys_dissector, flow,
-				  NULL, 0, 0, 0, flags);
+	return __skb_flow_dissect(NULL, skb, &flow_keys_dissector,
+				  flow, NULL, 0, 0, 0, flags);
 }
 
-static inline bool skb_flow_dissect_flow_keys_buf(struct flow_keys *flow,
-						  void *data, __be16 proto,
-						  int nhoff, int hlen,
-						  unsigned int flags)
+static inline bool
+skb_flow_dissect_flow_keys_buf(const struct net *net, struct flow_keys *flow,
+			       void *data, __be16 proto, int nhoff,
+			       int hlen, unsigned int flags)
 {
 	memset(flow, 0, sizeof(*flow));
-	return __skb_flow_dissect(NULL, &flow_keys_buf_dissector, flow,
-				  data, proto, nhoff, hlen, flags);
+	return __skb_flow_dissect(net, NULL, &flow_keys_buf_dissector,
+				  flow, data, proto, nhoff, hlen, flags);
 }
 
 static inline __u32 skb_get_hash(struct sk_buff *skb)

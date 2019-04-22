@@ -266,6 +266,13 @@ static inline void *skb_flow_dissector_target(struct flow_dissector *flow_dissec
 	return ((char *)target_container) + flow_dissector->offset[key_id];
 }
 
+struct bpf_flow_dissector {
+	struct bpf_flow_keys	*flow_keys;
+	const struct sk_buff	*skb;
+	const void		*data;
+	const void		*data_end;
+};
+
 static inline void
 flow_dissector_init_keys(struct flow_dissector_key_control *key_control,
 			 struct flow_dissector_key_basic *key_basic)
