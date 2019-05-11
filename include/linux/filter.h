@@ -804,6 +804,7 @@ static inline bool bpf_dump_raw_ok(void)
 
 struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 				       const struct bpf_insn *patch, u32 len);
+int bpf_remove_insns(struct bpf_prog *prog, u32 off, u32 cnt);
 
 /* The pair of xdp_do_redirect and xdp_do_flush_map MUST be called in the
  * same cpu context. Further for best results no more than a single map
