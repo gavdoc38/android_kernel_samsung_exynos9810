@@ -169,6 +169,13 @@ enum bpf_attach_type {
  */
 #define BPF_F_ANY_ALIGNMENT	(1U << 1)
 
+/* BPF_F_TEST_RND_HI32 is used in BPF_PROG_LOAD for testing. The verifier
+ * performs subregister def/use analysis and identifies definitions whose
+ * high 32 bits are never referenced. With this flag set, those unused high
+ * bits are randomized so verifier analysis mistakes become visible in tests.
+ */
+#define BPF_F_TEST_RND_HI32	(1U << 2)
+
 #define BPF_PSEUDO_MAP_FD	1
 
 /* flags for BPF_MAP_UPDATE_ELEM command */
