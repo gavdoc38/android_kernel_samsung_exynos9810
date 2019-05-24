@@ -7016,6 +7016,38 @@ static void sanitize_dead_code(struct bpf_verifier_env *env)
 /* convert load instructions that access fields of 'struct __sk_buff'
  * into sequence of instructions that access fields of 'struct sk_buff'
  */
+static int opt_subreg_zext_lo32(struct bpf_verifier_env *env)
+{
+	struct bpf_insn_aux_data *aux = env->insn_aux_data;
+	struct bpf_insn *insns = env->prog->insnsi;
+	int i, delta = 0, len = env->prog->len;
+	struct bpf_insn zext_patch[2];
+	struct bpf_prog *new_prog;
+
+	zext_patch[1] = BPF_ZEXT_REG(0);
+	for (i = 0; i < len; i++) {
+		int adj_idx = i + delta;
+		struct bpf_insn insn;
+
+		if (!aux[adj_idx].zext_dst)
+			continue;
+
+		insn = insns[adj_idx];
+		zext_patch[0] = insn;
+		zext_patch[1].dst_reg = insn.dst_reg;
+		zext_patch[1].src_reg = insn.dst_reg;
+		new_prog = bpf_patch_insn_data(env, adj_idx, zext_patch, 2);
+		if (!new_prog)
+			return -ENOMEM;
+		env->prog = new_prog;
+		insns = new_prog->insnsi;
+		aux = env->insn_aux_data;
+		delta += 2;
+	}
+
+	return 0;
+}
+
 static int convert_ctx_accesses(struct bpf_verifier_env *env)
 {
 	const struct bpf_verifier_ops *ops = env->ops;
@@ -7746,6 +7778,15 @@ skip_full_check:
 
 	if (ret == 0)
 		ret = fixup_bpf_calls(env);
+
+	/* Do 32-bit optimization after instruction patching so patched
+	 * instructions can be handled correctly.
+	 */
+	if (ret == 0 && bpf_jit_needs_zext() &&
+	    !bpf_prog_is_dev_bound(env->prog->aux)) {
+		ret = opt_subreg_zext_lo32(env);
+		env->prog->aux->verifier_zext = !ret;
+	}
 
 	if (ret == 0)
 		ret = fixup_call_args(env);
