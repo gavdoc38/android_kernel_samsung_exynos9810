@@ -821,6 +821,14 @@ bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)
 	return size <= size_default && (size & (size - 1)) == 0;
 }
 
+static inline bool
+bpf_ctx_wide_access_ok(u32 off, u32 size, u32 field_off, u32 field_end)
+{
+	return size == sizeof(__u64) && off >= field_off &&
+	       off + sizeof(__u64) <= field_end &&
+	       off % sizeof(__u64) == 0;
+}
+
 static inline u8
 bpf_ctx_narrow_load_shift(u32 off, u32 size, u32 size_default)
 {
