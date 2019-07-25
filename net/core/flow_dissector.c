@@ -469,6 +469,7 @@ bool bpf_flow_dissect(struct bpf_prog *prog, struct bpf_flow_dissector *ctx,
 		      __be16 proto, int nhoff, int hlen, unsigned int flags)
 {
 	struct bpf_flow_keys *flow_keys = ctx->flow_keys;
+	u32 bpf_flags = 0;
 	u32 result;
 
 	memset(flow_keys, 0, sizeof(*flow_keys));
@@ -476,13 +477,16 @@ bool bpf_flow_dissect(struct bpf_prog *prog, struct bpf_flow_dissector *ctx,
 	flow_keys->nhoff = nhoff;
 	flow_keys->thoff = flow_keys->nhoff;
 
-	BUILD_BUG_ON((int)BPF_FLOW_DISSECTOR_F_PARSE_1ST_FRAG !=
-		     (int)FLOW_DISSECTOR_F_PARSE_1ST_FRAG);
-	BUILD_BUG_ON((int)BPF_FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL !=
-		     (int)FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL);
-	BUILD_BUG_ON((int)BPF_FLOW_DISSECTOR_F_STOP_AT_ENCAP !=
-		     (int)FLOW_DISSECTOR_F_STOP_AT_ENCAP);
-	flow_keys->flags = flags;
+	/* The 4.9 flow-dissector flags contain STOP_AT_L3 between the
+	 * UAPI-visible bits, so translate them instead of copying them.
+	 */
+	if (flags & FLOW_DISSECTOR_F_PARSE_1ST_FRAG)
+		bpf_flags |= BPF_FLOW_DISSECTOR_F_PARSE_1ST_FRAG;
+	if (flags & FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL)
+		bpf_flags |= BPF_FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL;
+	if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP)
+		bpf_flags |= BPF_FLOW_DISSECTOR_F_STOP_AT_ENCAP;
+	flow_keys->flags = bpf_flags;
 
 	result = bpf_prog_run_pin_on_cpu(prog, ctx);
 
