@@ -30,6 +30,9 @@ struct btf;
 struct btf_type;
 struct exception_table_entry;
 
+extern struct idr btf_idr;
+extern spinlock_t btf_idr_lock;
+
 u64 bpf_probe_read_kernel(u64 dst, u64 size, u64 unsafe_ptr, u64 r4, u64 r5);
 struct poll_table_struct;
 
