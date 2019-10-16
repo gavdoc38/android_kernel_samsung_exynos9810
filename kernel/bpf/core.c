@@ -1077,6 +1077,11 @@ noinline u64 __bpf_call_base(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
 EXPORT_SYMBOL_GPL(__bpf_call_base);
 
 #ifndef CONFIG_BPF_JIT_ALWAYS_ON
+u64 __weak bpf_probe_read(void *dst, u32 size, const void *unsafe_ptr)
+{
+	memset(dst, 0, size);
+	return -EFAULT;
+}
 /**
  *	__bpf_prog_run - run eBPF program on a given context
  *	@ctx: is the data we are operating on
@@ -1220,6 +1225,10 @@ static u64 ___bpf_prog_run(u64 *regs, const struct bpf_insn *insn, u64 *stack)
 		[BPF_LD | BPF_IND | BPF_H] = &&LD_IND_H,
 		[BPF_LD | BPF_IND | BPF_B] = &&LD_IND_B,
 		[BPF_LD | BPF_IMM | BPF_DW] = &&LD_IMM_DW,
+		[BPF_LDX | BPF_PROBE_MEM | BPF_B] = &&LDX_PROBE_MEM_B,
+		[BPF_LDX | BPF_PROBE_MEM | BPF_H] = &&LDX_PROBE_MEM_H,
+		[BPF_LDX | BPF_PROBE_MEM | BPF_W] = &&LDX_PROBE_MEM_W,
+		[BPF_LDX | BPF_PROBE_MEM | BPF_DW] = &&LDX_PROBE_MEM_DW,
 	};
 	u32 tail_call_cnt = 0;
 	void *ptr;
@@ -1707,6 +1716,19 @@ out:
 	LDST(W,  u32)
 	LDST(DW, u64)
 #undef LDST
+	LDX_PROBE_MEM_B:
+		bpf_probe_read(&DST, 1, (const void *)(long)SRC);
+		CONT;
+	LDX_PROBE_MEM_H:
+		bpf_probe_read(&DST, 2, (const void *)(long)SRC);
+		CONT;
+	LDX_PROBE_MEM_W:
+		bpf_probe_read(&DST, 4, (const void *)(long)SRC);
+		CONT;
+	LDX_PROBE_MEM_DW:
+		bpf_probe_read(&DST, 8, (const void *)(long)SRC);
+		CONT;
+
 	STX_XADD_W: /* lock xadd *(u32 *)(dst_reg + off16) += src_reg */
 		atomic_add((u32) SRC, (atomic_t *)(unsigned long)
 			   (DST + insn->off));
