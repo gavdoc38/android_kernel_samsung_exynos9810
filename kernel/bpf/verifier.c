@@ -291,6 +291,54 @@ __printf(2, 3) static void verbose(void *private_data, const char *fmt, ...)
 	va_end(args);
 }
 
+__printf(2, 3) void bpf_log(struct bpf_verifier_log *log,
+			    const char *fmt, ...)
+{
+	va_list args;
+
+	if (!bpf_verifier_log_needed(log))
+		return;
+
+	va_start(args, fmt);
+	bpf_verifier_vlog(log, fmt, args);
+	va_end(args);
+}
+
+static const char *ltrim(const char *s)
+{
+	while (isspace(*s))
+		s++;
+
+	return s;
+}
+
+__printf(3, 4) static void verbose_linfo(struct bpf_verifier_env *env,
+					 u32 insn_off,
+					 const char *prefix_fmt, ...)
+{
+	const struct bpf_line_info *linfo;
+
+	if (!bpf_verifier_log_needed(&env->log))
+		return;
+
+	linfo = find_linfo(env, insn_off);
+	if (!linfo || linfo == env->prev_linfo)
+		return;
+
+	if (prefix_fmt) {
+		va_list args;
+
+		va_start(args, prefix_fmt);
+		bpf_verifier_vlog(&env->log, prefix_fmt, args);
+		va_end(args);
+	}
+
+	verbose(env, "%s\n",
+		ltrim(btf_name_by_offset(env->prog->aux->btf,
+					 linfo->line_off)));
+
+	env->prev_linfo = linfo;
+}
 static bool type_is_pkt_pointer(enum bpf_reg_type type)
 {
 	return type == PTR_TO_PACKET ||
@@ -378,6 +426,7 @@ static const char * const reg_type_str[] = {
 	[PTR_TO_TCP_SOCK]	= "tcp_sock",
 	[PTR_TO_TCP_SOCK_OR_NULL] = "tcp_sock_or_null",
 	[PTR_TO_TP_BUFFER]	= "tp_buffer",
+	[PTR_TO_BTF_ID]		= "ptr_",
 };
 
 static void print_liveness(struct bpf_verifier_env *env,
@@ -397,6 +446,12 @@ static struct bpf_func_state *func(struct bpf_verifier_env *env,
 	struct bpf_verifier_state *cur = env->cur_state;
 
 	return cur->frame[reg->frameno];
+}
+
+const char *kernel_type_name(u32 id)
+{
+	return btf_name_by_offset(btf_vmlinux,
+				  btf_type_by_id(btf_vmlinux, id)->name_off);
 }
 
 static void print_verifier_state(struct bpf_verifier_env *env,
@@ -424,6 +479,8 @@ static void print_verifier_state(struct bpf_verifier_env *env,
 			/* reg->off should be 0 for SCALAR_VALUE */
 			verbose(env, "%lld", reg->var_off.value + reg->off);
 		} else {
+			if (t == PTR_TO_BTF_ID)
+				verbose(env, "%s", kernel_type_name(reg->btf_id));
 			verbose(env, "(id=%d", reg->id);
 			if (t != SCALAR_VALUE)
 				verbose(env, ",off=%d", reg->off);
@@ -2391,10 +2448,12 @@ static int check_packet_access(struct bpf_verifier_env *env, u32 regno, int off,
 
 /* check access to 'struct bpf_context' fields.  Supports fixed offsets only */
 static int check_ctx_access(struct bpf_verifier_env *env, int insn_idx, int off, int size,
-			    enum bpf_access_type t, enum bpf_reg_type *reg_type)
+			    enum bpf_access_type t, enum bpf_reg_type *reg_type,
+			    u32 *btf_id)
 {
 	struct bpf_insn_access_aux info = {
 		.reg_type = *reg_type,
+		.log = &env->log,
 	};
 
 	/* for analyzer ctx accesses are already validated and converted */
@@ -2410,9 +2469,12 @@ static int check_ctx_access(struct bpf_verifier_env *env, int insn_idx, int off,
 		 * will only allow for whole field access and rejects any other
 		 * type of narrower access.
 		 */
-		env->insn_aux_data[insn_idx].ctx_field_size = info.ctx_field_size;
 		*reg_type = info.reg_type;
 
+		if (*reg_type == PTR_TO_BTF_ID)
+			*btf_id = info.btf_id;
+		else
+			env->insn_aux_data[insn_idx].ctx_field_size = info.ctx_field_size;
 		/* remember the offset of last byte accessed in ctx */
 		if (env->prog->aux->max_ctx_offset < off + size)
 			env->prog->aux->max_ctx_offset = off + size;
@@ -2899,6 +2961,53 @@ static int bpf_map_direct_read(struct bpf_map *map, int off, int size, u64 *val)
 	return 0;
 }
 
+static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
+				   struct bpf_reg_state *regs,
+				   int regno, int off, int size,
+				   enum bpf_access_type atype,
+				   int value_regno)
+{
+	struct bpf_reg_state *reg = regs + regno;
+	const struct btf_type *t = btf_type_by_id(btf_vmlinux, reg->btf_id);
+	const char *tname = btf_name_by_offset(btf_vmlinux, t->name_off);
+	u32 btf_id;
+	int ret;
+
+	if (atype != BPF_READ) {
+		verbose(env, "only read is supported\n");
+		return -EACCES;
+	}
+
+	if (off < 0) {
+		verbose(env,
+			"R%d is ptr_%s invalid negative access: off=%d\n",
+			regno, tname, off);
+		return -EACCES;
+	}
+	if (!tnum_is_const(reg->var_off) || reg->var_off.value) {
+		char tn_buf[48];
+
+		tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
+		verbose(env,
+			"R%d is ptr_%s invalid variable offset: off=%d, var_off=%s\n",
+			regno, tname, off, tn_buf);
+		return -EACCES;
+	}
+
+	ret = btf_struct_access(&env->log, t, off, size, atype, &btf_id);
+	if (ret < 0)
+		return ret;
+
+	if (ret == SCALAR_VALUE) {
+		mark_reg_unknown(env, regs, value_regno);
+		return 0;
+	}
+	mark_reg_known_zero(env, regs, value_regno);
+	regs[value_regno].type = PTR_TO_BTF_ID;
+	regs[value_regno].btf_id = btf_id;
+	return 0;
+}
+
 /* check whether memory at (regno + off) is accessible for t = (read | write)
  * if t==write, value_regno is a register which value is stored into memory
  * if t==read, value_regno is a register which will receive the value from memory
@@ -2961,6 +3070,7 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		}
 	} else if (reg->type == PTR_TO_CTX) {
 		enum bpf_reg_type reg_type = SCALAR_VALUE;
+		u32 btf_id = 0;
 
 		if (t == BPF_WRITE && value_regno >= 0 &&
 		    is_pointer_value(env, value_regno)) {
@@ -2971,7 +3081,9 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		if (err < 0)
 			return err;
 
-		err = check_ctx_access(env, insn_idx, off, size, t, &reg_type);
+		err = check_ctx_access(env, insn_idx, off, size, t, &reg_type, &btf_id);
+		if (err)
+			verbose_linfo(env, insn_idx, "; ");
 		if (!err && t == BPF_READ && value_regno >= 0) {
 			/* ctx access returns either a scalar, or a
 			 * PTR_TO_PACKET[_END].  In the latter case, we know
@@ -2984,6 +3096,8 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 				if (reg_type_may_be_null(reg_type))
 					regs[value_regno].id = ++env->id_gen;
 				regs[value_regno].subreg_def = DEF_NOT_SUBREG;
+				if (reg_type == PTR_TO_BTF_ID)
+					regs[value_regno].btf_id = btf_id;
 			}
 			regs[value_regno].type = reg_type;
 		}
@@ -3036,6 +3150,9 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		err = check_tp_buffer_access(env, reg, regno, off, size);
 		if (!err && t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown(env, regs, value_regno);
+	} else if (reg->type == PTR_TO_BTF_ID) {
+		err = check_ptr_to_btf_access(env, regs, regno, off, size, t,
+					      value_regno);
 	} else {
 		return -EACCES;
 	}
