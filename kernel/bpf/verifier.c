@@ -211,6 +211,7 @@ struct bpf_call_arg_meta {
 	u64 msize_max_value;
 	int ptr_id;
 	int func_id;
+	u32 btf_id;
 };
 
 struct btf *btf_vmlinux;
@@ -3522,6 +3523,21 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			verbose(env, "verifier internal error\n");
 			return -EFAULT;
 		}
+	} else if (arg_type == ARG_PTR_TO_BTF_ID) {
+		expected_type = PTR_TO_BTF_ID;
+		if (type != expected_type)
+			goto err_type;
+		if (reg->btf_id != meta->btf_id) {
+			verbose(env, "Helper has type %s got %s in R%d\n",
+				kernel_type_name(meta->btf_id),
+				kernel_type_name(reg->btf_id), regno);
+			return -EACCES;
+		}
+		if (!tnum_is_const(reg->var_off) || reg->var_off.value || reg->off) {
+			verbose(env, "R%d is a pointer to in-kernel struct with non-zero offset\n",
+				regno);
+			return -EACCES;
+		}
 	} else if (arg_type_is_mem_ptr(arg_type)) {
 		expected_type = PTR_TO_STACK;
 		/* One exception here. In case function allows for NULL to be
@@ -3661,7 +3677,8 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		break;
 	case BPF_MAP_TYPE_PERF_EVENT_ARRAY:
 		if (func_id != BPF_FUNC_perf_event_read &&
-		    func_id != BPF_FUNC_perf_event_output)
+		    func_id != BPF_FUNC_perf_event_output &&
+		    func_id != BPF_FUNC_skb_output)
 			goto error;
 		break;
 	case BPF_MAP_TYPE_STACK_TRACE:
@@ -3736,6 +3753,7 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		break;
 	case BPF_FUNC_perf_event_read:
 	case BPF_FUNC_perf_event_output:
+	case BPF_FUNC_skb_output:
 		if (map->map_type != BPF_MAP_TYPE_PERF_EVENT_ARRAY)
 			goto error;
 		break;
@@ -4159,21 +4177,17 @@ static int check_helper_call(struct bpf_verifier_env *env, int func_id, int insn
 
 	meta.func_id = func_id;
 	/* check args */
-	err = check_func_arg(env, BPF_REG_1, fn->arg1_type, &meta);
-	if (err)
-		return err;
-	err = check_func_arg(env, BPF_REG_2, fn->arg2_type, &meta);
-	if (err)
-		return err;
-	err = check_func_arg(env, BPF_REG_3, fn->arg3_type, &meta);
-	if (err)
-		return err;
-	err = check_func_arg(env, BPF_REG_4, fn->arg4_type, &meta);
-	if (err)
-		return err;
-	err = check_func_arg(env, BPF_REG_5, fn->arg5_type, &meta);
-	if (err)
-		return err;
+	for (i = 0; i < 5; i++) {
+		if (fn->arg_type[i] == ARG_PTR_TO_BTF_ID) {
+			if (!fn->btf_id[i])
+				fn->btf_id[i] = btf_resolve_helper_id(&env->log,
+								 fn->func, i);
+			meta.btf_id = fn->btf_id[i];
+		}
+		err = check_func_arg(env, BPF_REG_1 + i, fn->arg_type[i], &meta);
+		if (err)
+			return err;
+	}
 
 	err = record_func_map(env, &meta, func_id, insn_idx);
 	if (err)
