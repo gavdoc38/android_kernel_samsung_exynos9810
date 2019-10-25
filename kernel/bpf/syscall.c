@@ -1853,8 +1853,8 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 			err = -EINVAL;
 			goto out_put_prog;
 		}
-		tp_name = kernel_type_name(prog->aux->attach_btf_id);
-		tp_name += sizeof("btf_trace_") - 1;
+		/* raw_tp name is taken from type name instead */
+		tp_name = prog->aux->attach_func_name;
 	} else {
 		if (strncpy_from_user(buf,
 				      u64_to_user_ptr(attr->raw_tracepoint.name),
