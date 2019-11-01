@@ -1098,9 +1098,10 @@ noinline u64 __bpf_call_base(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
 EXPORT_SYMBOL_GPL(__bpf_call_base);
 
 #ifndef CONFIG_BPF_JIT_ALWAYS_ON
-u64 __weak bpf_probe_read_kernel(void *dst, u32 size, const void *unsafe_ptr)
+u64 __weak bpf_probe_read_kernel(u64 dst, u64 size, u64 unsafe_ptr,
+				 u64 r4, u64 r5)
 {
-	memset(dst, 0, size);
+	memset((void *)(unsigned long)dst, 0, size);
 	return -EFAULT;
 }
 
@@ -1739,20 +1740,20 @@ out:
 	LDST(DW, u64)
 #undef LDST
 	LDX_PROBE_MEM_B:
-		bpf_probe_read_kernel(&DST, 1,
-				      (const void *)(long)(SRC + insn->off));
+		bpf_probe_read_kernel((unsigned long)&DST, 1,
+				      SRC + insn->off, 0, 0);
 		CONT;
 	LDX_PROBE_MEM_H:
-		bpf_probe_read_kernel(&DST, 2,
-				      (const void *)(long)(SRC + insn->off));
+		bpf_probe_read_kernel((unsigned long)&DST, 2,
+				      SRC + insn->off, 0, 0);
 		CONT;
 	LDX_PROBE_MEM_W:
-		bpf_probe_read_kernel(&DST, 4,
-				      (const void *)(long)(SRC + insn->off));
+		bpf_probe_read_kernel((unsigned long)&DST, 4,
+				      SRC + insn->off, 0, 0);
 		CONT;
 	LDX_PROBE_MEM_DW:
-		bpf_probe_read_kernel(&DST, 8,
-				      (const void *)(long)(SRC + insn->off));
+		bpf_probe_read_kernel((unsigned long)&DST, 8,
+				      SRC + insn->off, 0, 0);
 		CONT;
 
 	STX_XADD_W: /* lock xadd *(u32 *)(dst_reg + off16) += src_reg */
