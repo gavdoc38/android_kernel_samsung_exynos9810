@@ -30,6 +30,8 @@ struct btf;
 struct btf_type;
 struct exception_table_entry;
 
+u64 bpf_probe_read_kernel(void *dst, u32 size, const void *unsafe_ptr);
+
 /* map is generic key/value storage optionally accesible by eBPF programs */
 struct bpf_map_ops {
 	/* funcs callable from userspace (via syscall) */

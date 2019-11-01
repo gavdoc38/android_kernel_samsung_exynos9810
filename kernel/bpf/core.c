@@ -1098,11 +1098,12 @@ noinline u64 __bpf_call_base(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
 EXPORT_SYMBOL_GPL(__bpf_call_base);
 
 #ifndef CONFIG_BPF_JIT_ALWAYS_ON
-u64 __weak bpf_probe_read(void *dst, u32 size, const void *unsafe_ptr)
+u64 __weak bpf_probe_read_kernel(void *dst, u32 size, const void *unsafe_ptr)
 {
 	memset(dst, 0, size);
 	return -EFAULT;
 }
+
 /**
  *	__bpf_prog_run - run eBPF program on a given context
  *	@ctx: is the data we are operating on
@@ -1738,16 +1739,16 @@ out:
 	LDST(DW, u64)
 #undef LDST
 	LDX_PROBE_MEM_B:
-		bpf_probe_read(&DST, 1, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 1, (const void *)(long)SRC);
 		CONT;
 	LDX_PROBE_MEM_H:
-		bpf_probe_read(&DST, 2, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 2, (const void *)(long)SRC);
 		CONT;
 	LDX_PROBE_MEM_W:
-		bpf_probe_read(&DST, 4, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 4, (const void *)(long)SRC);
 		CONT;
 	LDX_PROBE_MEM_DW:
-		bpf_probe_read(&DST, 8, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 8, (const void *)(long)SRC);
 		CONT;
 
 	STX_XADD_W: /* lock xadd *(u32 *)(dst_reg + off16) += src_reg */
