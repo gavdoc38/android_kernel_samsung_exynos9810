@@ -1739,16 +1739,20 @@ out:
 	LDST(DW, u64)
 #undef LDST
 	LDX_PROBE_MEM_B:
-		bpf_probe_read_kernel(&DST, 1, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 1,
+				      (const void *)(long)(SRC + insn->off));
 		CONT;
 	LDX_PROBE_MEM_H:
-		bpf_probe_read_kernel(&DST, 2, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 2,
+				      (const void *)(long)(SRC + insn->off));
 		CONT;
 	LDX_PROBE_MEM_W:
-		bpf_probe_read_kernel(&DST, 4, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 4,
+				      (const void *)(long)(SRC + insn->off));
 		CONT;
 	LDX_PROBE_MEM_DW:
-		bpf_probe_read_kernel(&DST, 8, (const void *)(long)SRC);
+		bpf_probe_read_kernel(&DST, 8,
+				      (const void *)(long)(SRC + insn->off));
 		CONT;
 
 	STX_XADD_W: /* lock xadd *(u32 *)(dst_reg + off16) += src_reg */
