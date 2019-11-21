@@ -910,6 +910,17 @@ static void __reg_bound_offset(struct bpf_reg_state *reg)
 						 reg->umax_value));
 }
 
+static void __reg_bound_offset32(struct bpf_reg_state *reg)
+{
+	u64 mask = 0xffffFFFF;
+	struct tnum range = tnum_range(reg->umin_value & mask,
+				       reg->umax_value & mask);
+	struct tnum lo32 = tnum_cast(reg->var_off, 4);
+	struct tnum hi32 = tnum_lshift(tnum_rshift(reg->var_off, 32), 32);
+
+	reg->var_off = tnum_or(hi32, tnum_intersect(lo32, range));
+}
+
 /* Reset the min/max bounds of a register */
 static void __mark_reg_unbounded(struct bpf_reg_state *reg)
 {
@@ -5158,6 +5169,10 @@ static void reg_set_min_max(struct bpf_reg_state *true_reg,
 	__reg_deduce_bounds(true_reg);
 	__reg_bound_offset(false_reg);
 	__reg_bound_offset(true_reg);
+	if (is_jmp32) {
+		__reg_bound_offset32(false_reg);
+		__reg_bound_offset32(true_reg);
+	}
 	__update_reg_bounds(false_reg);
 	__update_reg_bounds(true_reg);
 }
@@ -5258,6 +5273,10 @@ static void reg_set_min_max_inv(struct bpf_reg_state *true_reg,
 	__reg_deduce_bounds(true_reg);
 	__reg_bound_offset(false_reg);
 	__reg_bound_offset(true_reg);
+	if (is_jmp32) {
+		__reg_bound_offset32(false_reg);
+		__reg_bound_offset32(true_reg);
+	}
 	__update_reg_bounds(false_reg);
 	__update_reg_bounds(true_reg);
 }
