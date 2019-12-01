@@ -2123,10 +2123,13 @@ static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
 			return -EPERM;
 
 		/*
-		 * A read-only MAP_SHARED mapping must not regain write
-		 * access through mprotect().
+		 * A sealed memfd can still be mapped MAP_SHARED and
+		 * read-only. Do not let mprotect() restore write access
+		 * on shared mappings. Private mappings must retain
+		 * VM_MAYWRITE so their normal COW behavior is preserved.
 		 */
-		vma->vm_flags &= ~VM_MAYWRITE;
+		if (vma->vm_flags & VM_SHARED)
+			vma->vm_flags &= ~VM_MAYWRITE;
 	}
 
 	file_accessed(file);
