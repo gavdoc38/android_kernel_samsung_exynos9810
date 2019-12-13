@@ -21,6 +21,20 @@ static struct hlist_head trampoline_table[TRAMPOLINE_TABLE_SIZE];
 /* Serializes access to trampoline_table. */
 static DEFINE_MUTEX(trampoline_mutex);
 
+void *bpf_jit_alloc_exec_page(void)
+{
+	void *image;
+
+	image = bpf_jit_alloc_exec(PAGE_SIZE);
+	if (!image)
+		return NULL;
+
+	set_vm_flush_reset_perms(image);
+	/* Keep the image writable instead of flipping it for every update. */
+	set_memory_x((unsigned long)image, 1);
+	return image;
+}
+
 static struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
 {
 	struct bpf_trampoline *tr = NULL;
@@ -42,7 +56,7 @@ static struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
 		goto out;
 
 	/* The caller was checked for privilege before reaching this point. */
-	image = bpf_jit_alloc_exec(PAGE_SIZE);
+	image = bpf_jit_alloc_exec_page();
 	if (!image) {
 		kfree(tr);
 		tr = NULL;
@@ -57,9 +71,6 @@ static struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
 	for (i = 0; i < BPF_TRAMP_MAX; i++)
 		INIT_HLIST_HEAD(&tr->progs_hlist[i]);
 
-	set_vm_flush_reset_perms(image);
-	/* Keep the image writable instead of flipping it for every update. */
-	set_memory_x((unsigned long)image, 1);
 	tr->image = image;
 out:
 	mutex_unlock(&trampoline_mutex);

@@ -7188,10 +7188,16 @@ static int dev_xdp_install(struct net_device *dev, enum bpf_xdp_mode mode,
 	if (prog)
 		bpf_prog_inc(prog);
 	err = bpf_op(dev, &xdp);
-	if (err && prog)
-		bpf_prog_put(prog);
+	if (err) {
+		if (prog)
+			bpf_prog_put(prog);
+		return err;
+	}
 
-	return err;
+	if (mode != XDP_MODE_HW)
+		bpf_prog_change_xdp(dev_xdp_prog(dev, mode), prog);
+
+	return 0;
 }
 
 static void dev_xdp_uninstall(struct net_device *dev)

@@ -602,8 +602,14 @@ struct sk_filter {
 
 DECLARE_STATIC_KEY_FALSE(bpf_stats_enabled_key);
 
-static __always_inline u32 bpf_prog_run(const struct bpf_prog *prog,
-					const void *ctx)
+typedef unsigned int (*bpf_dispatcher_fn)(
+	const void *ctx,
+	const struct bpf_insn *insnsi,
+	unsigned int (*bpf_func)(const void *, const struct bpf_insn *));
+
+static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
+					  const void *ctx,
+					  bpf_dispatcher_fn dfunc)
 {
 	u32 ret;
 
@@ -612,16 +618,22 @@ static __always_inline u32 bpf_prog_run(const struct bpf_prog *prog,
 		struct bpf_prog_stats *stats;
 		u64 start = sched_clock();
 
-		ret = prog->bpf_func(ctx, prog->insnsi);
+		ret = dfunc(ctx, prog->insnsi, prog->bpf_func);
 		stats = this_cpu_ptr(prog->aux->stats);
 		u64_stats_update_begin(&stats->syncp);
 		stats->cnt++;
 		stats->nsecs += sched_clock() - start;
 		u64_stats_update_end(&stats->syncp);
 	} else {
-		ret = prog->bpf_func(ctx, prog->insnsi);
+		ret = dfunc(ctx, prog->insnsi, prog->bpf_func);
 	}
 	return ret;
+}
+
+static __always_inline u32 bpf_prog_run(const struct bpf_prog *prog,
+					const void *ctx)
+{
+	return __bpf_prog_run(prog, ctx, bpf_dispatcher_nop_func);
 }
 
 /*
@@ -750,6 +762,8 @@ static inline u32 bpf_prog_run_clear_cb(const struct bpf_prog *prog,
 	return res;
 }
 
+DECLARE_BPF_DISPATCHER(xdp);
+
 static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 					    struct xdp_buff *xdp)
 {
@@ -759,8 +773,10 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 	 * already takes rcu_read_lock() when fetching the program, so
 	 * it's not necessary here anymore.
 	 */
-	return bpf_prog_run(prog, xdp);
+	return __bpf_prog_run(prog, xdp, BPF_DISPATCHER_FUNC(xdp));
 }
+
+void bpf_prog_change_xdp(struct bpf_prog *prev_prog, struct bpf_prog *prog);
 
 static inline u32 bpf_prog_insn_size(const struct bpf_prog *prog)
 {

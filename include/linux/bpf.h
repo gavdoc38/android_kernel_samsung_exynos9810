@@ -609,6 +609,31 @@ struct bpf_trampoline {
 	u64 selector;
 };
 
+#define BPF_DISPATCHER_MAX 48 /* Fits in half a page. */
+
+struct bpf_dispatcher_prog {
+	struct bpf_prog *prog;
+	refcount_t users;
+};
+
+struct bpf_dispatcher {
+	/* Serializes dispatcher program and image updates. */
+	struct mutex mutex;
+	void *func;
+	struct bpf_dispatcher_prog progs[BPF_DISPATCHER_MAX];
+	int num_progs;
+	void *image;
+	u32 image_off;
+};
+
+static __always_inline __nocfi unsigned int bpf_dispatcher_nop_func(
+	const void *ctx,
+	const struct bpf_insn *insnsi,
+	unsigned int (*bpf_func)(const void *, const struct bpf_insn *))
+{
+	return bpf_func(ctx, insnsi);
+}
+
 #ifdef CONFIG_BPF_JIT
 struct bpf_trampoline *bpf_trampoline_get(
 	u64 key, struct bpf_attach_target_info *tgt_info);
@@ -617,6 +642,40 @@ int bpf_trampoline_link_prog(struct bpf_prog *prog,
 int bpf_trampoline_unlink_prog(struct bpf_prog *prog,
 			       struct bpf_trampoline *tr);
 void bpf_trampoline_put(struct bpf_trampoline *tr);
+void *bpf_jit_alloc_exec_page(void);
+#define BPF_DISPATCHER_INIT(_name) {				\
+	.mutex = __MUTEX_INITIALIZER(_name.mutex),		\
+	.func = &_name##_func,					\
+	.progs = {},						\
+	.num_progs = 0,						\
+	.image = NULL,						\
+	.image_off = 0,						\
+}
+
+#define DEFINE_BPF_DISPATCHER(name)					\
+	noinline __nocfi unsigned int bpf_dispatcher_##name##_func(	\
+		const void *ctx,					\
+		const struct bpf_insn *insnsi,				\
+		unsigned int (*bpf_func)(const void *,			\
+					 const struct bpf_insn *))	\
+	{								\
+		return bpf_func(ctx, insnsi);				\
+	}								\
+	EXPORT_SYMBOL(bpf_dispatcher_##name##_func);			\
+	struct bpf_dispatcher bpf_dispatcher_##name =			\
+		BPF_DISPATCHER_INIT(bpf_dispatcher_##name)
+#define DECLARE_BPF_DISPATCHER(name)					\
+	unsigned int bpf_dispatcher_##name##_func(			\
+		const void *ctx,					\
+		const struct bpf_insn *insnsi,				\
+		unsigned int (*bpf_func)(const void *,			\
+					 const struct bpf_insn *));	\
+	extern struct bpf_dispatcher bpf_dispatcher_##name
+#define BPF_DISPATCHER_FUNC(name) bpf_dispatcher_##name##_func
+#define BPF_DISPATCHER_PTR(name) (&bpf_dispatcher_##name)
+void bpf_dispatcher_change_prog(struct bpf_dispatcher *d,
+				struct bpf_prog *from,
+				struct bpf_prog *to);
 #else
 static inline struct bpf_trampoline *bpf_trampoline_get(
 	u64 key, struct bpf_attach_target_info *tgt_info)
@@ -637,6 +696,16 @@ static inline int bpf_trampoline_unlink_prog(struct bpf_prog *prog,
 }
 
 static inline void bpf_trampoline_put(struct bpf_trampoline *tr)
+{
+}
+
+#define DEFINE_BPF_DISPATCHER(name)
+#define DECLARE_BPF_DISPATCHER(name)
+#define BPF_DISPATCHER_FUNC(name) bpf_dispatcher_nop_func
+#define BPF_DISPATCHER_PTR(name) NULL
+static inline void bpf_dispatcher_change_prog(struct bpf_dispatcher *d,
+					      struct bpf_prog *from,
+					      struct bpf_prog *to)
 {
 }
 #endif
