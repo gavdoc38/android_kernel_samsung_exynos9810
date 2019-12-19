@@ -150,11 +150,17 @@ enum bpf_attach_type {
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
 
-/* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command
- * to the given target_fd cgroup the descendent cgroup will be able to
- * override effective bpf program that was inherited from this cgroup
+/* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command to the
+ * given target_fd cgroup, the descendant cgroup will be able to override
+ * the effective BPF program inherited from this cgroup.
+ *
+ * BPF_F_ALLOW_MULTI permits multiple programs per attach type. A program
+ * in such a list can be replaced in place with BPF_F_REPLACE and the old
+ * program descriptor supplied in replace_bpf_fd.
  */
 #define BPF_F_ALLOW_OVERRIDE	(1U << 0)
+#define BPF_F_ALLOW_MULTI	(1U << 1)
+#define BPF_F_REPLACE		(1U << 2)
 
 /* If BPF_F_STRICT_ALIGNMENT is used in BPF_PROG_LOAD command, the
  * verifier will perform strict alignment checking as if the kernel
@@ -248,6 +254,7 @@ union bpf_attr {
 		__u32		attach_bpf_fd;	/* eBPF program to attach */
 		__u32		attach_type;
 		__u32		attach_flags;
+		__u32		replace_bpf_fd;	/* previously attached program */
 	};
 
 	struct { /* anonymous struct used by BPF_PROG_TEST_RUN command */
