@@ -187,11 +187,6 @@
  */
 #define BTF_MAX_SIZE (16 * 1024 * 1024)
 
-#define for_each_member(i, struct_type, member)			\
-	for (i = 0, member = btf_type_member(struct_type);	\
-	     i < btf_type_vlen(struct_type);			\
-	     i++, member++)
-
 #define for_each_member_from(i, from, struct_type, member)		\
 	for (i = from, member = btf_type_member(struct_type) + from;	\
 	     i < btf_type_vlen(struct_type);				\
@@ -432,7 +427,7 @@ static bool btf_type_is_modifier(const struct btf_type *t)
 	return false;
 }
 
-static bool btf_type_is_void(const struct btf_type *t)
+bool btf_type_is_void(const struct btf_type *t)
 {
 	return t == &btf_void;
 
@@ -533,25 +528,6 @@ static const char *btf_int_encoding_str(u8 encoding)
 		return "UNKN";
 }
 
-static bool btf_type_kflag(const struct btf_type *t)
-{
-	return BTF_INFO_KFLAG(t->info);
-}
-
-static u32 btf_member_bit_offset(const struct btf_type *struct_type,
-			     const struct btf_member *member)
-{
-	return btf_type_kflag(struct_type) ? BTF_MEMBER_BIT_OFFSET(member->offset)
-					   : member->offset;
-}
-
-static u32 btf_member_bitfield_size(const struct btf_type *struct_type,
-				    const struct btf_member *member)
-{
-	return btf_type_kflag(struct_type) ? BTF_MEMBER_BITFIELD_SIZE(member->offset)
-					   : 0;
-}
-
 static u32 btf_type_int(const struct btf_type *t)
 {
 	return *(u32 *)(t + 1);
@@ -560,11 +536,6 @@ static u32 btf_type_int(const struct btf_type *t)
 static const struct btf_array *btf_type_array(const struct btf_type *t)
 {
 	return (const struct btf_array *)(t + 1);
-}
-
-static const struct btf_member *btf_type_member(const struct btf_type *t)
-{
-	return (const struct btf_member *)(t + 1);
 }
 
 static const struct btf_enum *btf_type_enum(const struct btf_type *t)
@@ -720,6 +691,30 @@ btf_type_skip_modifiers(const struct btf *btf, u32 id, u32 *res_id)
 		*res_id = id;
 
 	return t;
+}
+
+const struct btf_type *btf_type_resolve_ptr(const struct btf *btf,
+					    u32 id, u32 *res_id)
+{
+	const struct btf_type *t;
+
+	t = btf_type_skip_modifiers(btf, id, NULL);
+	if (!t || !btf_type_is_ptr(t))
+		return NULL;
+
+	return btf_type_skip_modifiers(btf, t->type, res_id);
+}
+
+const struct btf_type *btf_type_resolve_func_ptr(const struct btf *btf,
+						 u32 id, u32 *res_id)
+{
+	const struct btf_type *ptype;
+
+	ptype = btf_type_resolve_ptr(btf, id, res_id);
+	if (ptype && btf_type_is_func_proto(ptype))
+		return ptype;
+
+	return NULL;
 }
 
 /*
@@ -4705,6 +4700,8 @@ struct btf *btf_parse_vmlinux(void)
 	err = btf_vmlinux_map_ids_init(btf, log);
 	if (err < 0)
 		goto errout;
+
+	bpf_struct_ops_init(btf, log);
 
 	refcount_set(&btf->refcnt, 1);
 

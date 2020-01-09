@@ -19,6 +19,7 @@
 #include <linux/mm_types.h>
 #include <linux/wait.h>
 #include <linux/mutex.h>
+#include <linux/module.h>
 #include <linux/refcount.h>
 #include <linux/u64_stats_sync.h>
 #include <linux/sched.h>
@@ -165,6 +166,7 @@ struct bpf_map {
 	int numa_node;
 	u32 btf_key_type_id;
 	u32 btf_value_type_id;
+	u32 btf_vmlinux_value_type_id;
 	struct btf *btf;
 	char name[BPF_OBJ_NAME_LEN];
 	u32 pages;
@@ -242,6 +244,7 @@ static inline void copy_map_value(struct bpf_map *map, void *dst, void *src)
 
 void copy_map_value_locked(struct bpf_map *map, void *dst, void *src,
 			   bool lock_src);
+int bpf_obj_name_cpy(char *dst, const char *src, unsigned int size);
 void bpf_timer_cancel_and_free(void *timer);
 
 struct bpf_offloaded_map;
@@ -558,8 +561,11 @@ struct bpf_attach_target_info {
 #define BPF_TRAMP_F_SKIP_FRAME		BIT(2)
 /* Store the traced function IP before the program context. */
 #define BPF_TRAMP_F_IP_ARG		BIT(3)
+/* Return the return value of fentry prog. Only used by bpf_struct_ops. */
+#define BPF_TRAMP_F_RET_FENTRY_RET	BIT(4)
 
-int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
+int arch_prepare_bpf_trampoline(void *image, void *image_end,
+				const struct btf_func_model *m,
 				u32 flags, struct bpf_prog **fentry_progs,
 				int fentry_cnt, struct bpf_prog **mod_ret_progs,
 				int mod_ret_cnt, struct bpf_prog **fexit_progs,
@@ -1043,6 +1049,80 @@ struct bpf_link_ops {
 	int (*fill_link_info)(const struct bpf_link *link,
 			      struct bpf_link_info *info);
 };
+
+struct bpf_struct_ops_value;
+struct btf_member;
+
+#define BPF_STRUCT_OPS_MAX_NR_MEMBERS 64
+struct bpf_struct_ops {
+	const struct bpf_verifier_ops *verifier_ops;
+	int (*init)(struct btf *btf);
+	int (*check_member)(const struct btf_type *t,
+			    const struct btf_member *member);
+	int (*init_member)(const struct btf_type *t,
+			   const struct btf_member *member,
+			   void *kdata, const void *udata);
+	int (*reg)(void *kdata);
+	void (*unreg)(void *kdata);
+	const struct btf_type *type;
+	const struct btf_type *value_type;
+	const char *name;
+	struct btf_func_model func_models[BPF_STRUCT_OPS_MAX_NR_MEMBERS];
+	u32 type_id;
+	u32 value_id;
+};
+
+#if defined(CONFIG_BPF_JIT) && defined(CONFIG_BPF_SYSCALL)
+#define BPF_MODULE_OWNER ((void *)((0xeB9FUL << 2) + POISON_POINTER_DELTA))
+const struct bpf_struct_ops *bpf_struct_ops_find(u32 type_id);
+void bpf_struct_ops_init(struct btf *btf, struct bpf_verifier_log *log);
+bool bpf_struct_ops_get(const void *kdata);
+void bpf_struct_ops_put(const void *kdata);
+int bpf_struct_ops_map_sys_lookup_elem(struct bpf_map *map, void *key,
+				       void *value);
+
+static inline bool bpf_try_module_get(const void *data, struct module *owner)
+{
+	if (owner == BPF_MODULE_OWNER)
+		return bpf_struct_ops_get(data);
+	return try_module_get(owner);
+}
+
+static inline void bpf_module_put(const void *data, struct module *owner)
+{
+	if (owner == BPF_MODULE_OWNER)
+		bpf_struct_ops_put(data);
+	else
+		module_put(owner);
+}
+#else
+static inline const struct bpf_struct_ops *bpf_struct_ops_find(u32 type_id)
+{
+	return NULL;
+}
+
+static inline void bpf_struct_ops_init(struct btf *btf,
+				       struct bpf_verifier_log *log)
+{
+}
+
+static inline bool bpf_try_module_get(const void *data, struct module *owner)
+{
+	return try_module_get(owner);
+}
+
+static inline void bpf_module_put(const void *data, struct module *owner)
+{
+	module_put(owner);
+}
+
+static inline int bpf_struct_ops_map_sys_lookup_elem(struct bpf_map *map,
+						     void *key,
+						     void *value)
+{
+	return -EINVAL;
+}
+#endif
 
 #ifdef CONFIG_BPF_SYSCALL
 DECLARE_PER_CPU(int, bpf_prog_active);

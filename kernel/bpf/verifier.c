@@ -8234,7 +8234,8 @@ static bool is_void_return_prog(const struct bpf_verifier_env *env)
 {
 	const struct bpf_prog *prog = env->prog;
 
-	return prog->type == BPF_PROG_TYPE_LSM &&
+	return (prog->type == BPF_PROG_TYPE_LSM ||
+		prog->type == BPF_PROG_TYPE_STRUCT_OPS) &&
 	       prog->aux->attach_func_proto &&
 	       !prog->aux->attach_func_proto->type;
 }
@@ -10175,6 +10176,11 @@ static int check_map_prog_compatibility(struct bpf_verifier_env *env,
 		}
 	}
 
+	if (map->map_type == BPF_MAP_TYPE_STRUCT_OPS) {
+		verbose(env, "bpf_struct_ops map cannot be used in prog\n");
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -10693,12 +10699,15 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			convert_ctx_access = bpf_tcp_sock_convert_ctx_access;
 			break;
 		case PTR_TO_BTF_ID:
-			if (type == BPF_WRITE) {
+			if (type == BPF_READ) {
+				insn->code = BPF_LDX | BPF_PROBE_MEM |
+					BPF_SIZE((insn)->code);
+				env->prog->aux->num_exentries++;
+			} else if (env->prog->type !=
+				   BPF_PROG_TYPE_STRUCT_OPS) {
 				verbose(env, "Writes through BTF pointers are not allowed\n");
 				return -EINVAL;
 			}
-			insn->code = BPF_LDX | BPF_PROBE_MEM | BPF_SIZE((insn)->code);
-			env->prog->aux->num_exentries++;
 			continue;
 		default:
 			continue;
@@ -11689,6 +11698,60 @@ out:
 	return 0;
 }
 
+static int check_struct_ops_btf_id(struct bpf_verifier_env *env)
+{
+	const struct btf_type *t, *func_proto;
+	const struct bpf_struct_ops *st_ops;
+	const struct btf_member *member;
+	struct bpf_prog *prog = env->prog;
+	struct btf *btf = prog->aux->attach_btf;
+	u32 btf_id, member_idx;
+	const char *mname;
+
+	btf_id = prog->aux->attach_btf_id;
+	st_ops = bpf_struct_ops_find(btf_id);
+	if (!st_ops) {
+		verbose(env, "attach_btf_id %u is not a supported struct\n",
+			btf_id);
+		return -ENOTSUPP;
+	}
+
+	t = st_ops->type;
+	member_idx = prog->expected_attach_type;
+	if (member_idx >= btf_type_vlen(t)) {
+		verbose(env, "attach to invalid member idx %u of struct %s\n",
+			member_idx, st_ops->name);
+		return -EINVAL;
+	}
+
+	member = &btf_type_member(t)[member_idx];
+	mname = btf_name_by_offset(btf, member->name_off);
+	func_proto = btf_type_resolve_func_ptr(btf, member->type, NULL);
+	if (!func_proto) {
+		verbose(env,
+			"attach to invalid member %s(@idx %u) of struct %s\n",
+			mname, member_idx, st_ops->name);
+		return -EINVAL;
+	}
+
+	if (st_ops->check_member) {
+		int err = st_ops->check_member(t, member);
+
+		if (err) {
+			verbose(env,
+				"attach to unsupported member %s of struct %s\n",
+				mname, st_ops->name);
+			return err;
+		}
+	}
+
+	prog->aux->attach_func_proto = func_proto;
+	prog->aux->attach_func_name = mname;
+	env->ops = st_ops->verifier_ops;
+
+	return 0;
+}
+
 static int check_attach_btf_id(struct bpf_verifier_env *env)
 {
 	struct bpf_prog *prog = env->prog;
@@ -11698,6 +11761,9 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 	struct bpf_trampoline *tr;
 	int ret;
 	u64 key;
+
+	if (prog->type == BPF_PROG_TYPE_STRUCT_OPS)
+		return check_struct_ops_btf_id(env);
 
 	if (prog->type == BPF_PROG_TYPE_SYSCALL) {
 		if (prog->aux->sleepable)

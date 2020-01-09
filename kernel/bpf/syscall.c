@@ -604,14 +604,15 @@ int bpf_get_file_flag(int flags)
 		   offsetof(union bpf_attr, CMD##_LAST_FIELD) - \
 		   sizeof(attr->CMD##_LAST_FIELD)) != NULL
 
-/* dst and src must have at least BPF_OBJ_NAME_LEN number of bytes.
- * Return 0 on success and < 0 on error.
+/* dst and src must have at least "size" number of bytes.
+ * Return strlen on success and < 0 on error.
  */
-static int bpf_obj_name_cpy(char *dst, const char *src)
+int bpf_obj_name_cpy(char *dst, const char *src, unsigned int size)
 {
-	const char *end = src + BPF_OBJ_NAME_LEN;
+	const char *end = src + size;
+	const char *orig_src = src;
 
-	memset(dst, 0, BPF_OBJ_NAME_LEN);
+	memset(dst, 0, size);
 	/* Copy all isalnum(), '_' and '.' chars. */
 	while (src < end && *src) {
 		if (!isalnum(*src) &&
@@ -620,11 +621,11 @@ static int bpf_obj_name_cpy(char *dst, const char *src)
 		*dst++ = *src++;
 	}
 
-	/* No '\0' found in BPF_OBJ_NAME_LEN number of bytes */
+	/* No '\0' found in "size" number of bytes */
 	if (src == end)
 		return -EINVAL;
 
-	return 0;
+	return src - orig_src;
 }
 
 int map_check_no_btf(const struct bpf_map *map,
@@ -686,7 +687,7 @@ static int map_check_btf(struct bpf_map *map, const struct btf *btf,
 	return ret;
 }
 
-#define BPF_MAP_CREATE_LAST_FIELD btf_value_type_id
+#define BPF_MAP_CREATE_LAST_FIELD btf_vmlinux_value_type_id
 /* called via syscall */
 static int map_create(union bpf_attr *attr)
 {
@@ -698,6 +699,14 @@ static int map_create(union bpf_attr *attr)
 	err = CHECK_ATTR(BPF_MAP_CREATE);
 	if (err)
 		return -EINVAL;
+
+	if (attr->btf_vmlinux_value_type_id) {
+		if (attr->map_type != BPF_MAP_TYPE_STRUCT_OPS ||
+		    attr->btf_key_type_id || attr->btf_value_type_id)
+			return -EINVAL;
+	} else if (attr->btf_key_type_id && !attr->btf_value_type_id) {
+		return -EINVAL;
+	}
 
 	f_flags = bpf_get_file_flag(attr->map_flags);
 	if (f_flags < 0)
@@ -717,39 +726,48 @@ static int map_create(union bpf_attr *attr)
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 
-	err = bpf_obj_name_cpy(map->name, attr->map_name);
-	if (err)
+	err = bpf_obj_name_cpy(map->name, attr->map_name,
+			       sizeof(attr->map_name));
+	if (err < 0)
 		goto free_map_nouncharge;
 
 	atomic64_set(&map->refcnt, 1);
 	atomic64_set(&map->usercnt, 1);
 	mutex_init(&map->freeze_mutex);
+	map->spin_lock_off = -EINVAL;
 	map->timer_off = -EINVAL;
 
-	if (attr->btf_key_type_id || attr->btf_value_type_id) {
+	if (attr->btf_key_type_id || attr->btf_value_type_id ||
+	    /* The program object needs BTF to match its local structure to
+	     * the corresponding kernel structure, even though the map value
+	     * itself is described by vmlinux BTF.
+	     */
+	    attr->btf_vmlinux_value_type_id) {
 		struct btf *btf;
 
-		if (!attr->btf_key_type_id || !attr->btf_value_type_id) {
-			err = -EINVAL;
-			goto free_map_nouncharge;
-		}
 		btf = btf_get_by_fd(attr->btf_fd);
 		if (IS_ERR(btf)) {
 			err = PTR_ERR(btf);
 			goto free_map_nouncharge;
 		}
-
-		err = map_check_btf(map, btf, attr->btf_key_type_id,
-					      attr->btf_value_type_id);
-		if (err) {
+		if (btf_is_kernel(btf)) {
 			btf_put(btf);
+			err = -EACCES;
 			goto free_map_nouncharge;
 		}
 		map->btf = btf;
+
+		if (attr->btf_value_type_id) {
+			err = map_check_btf(map, btf, attr->btf_key_type_id,
+					    attr->btf_value_type_id);
+			if (err)
+				goto free_map_nouncharge;
+		}
+
 		map->btf_key_type_id = attr->btf_key_type_id;
 		map->btf_value_type_id = attr->btf_value_type_id;
-	} else {
-		map->spin_lock_off = -EINVAL;
+		map->btf_vmlinux_value_type_id =
+			attr->btf_vmlinux_value_type_id;
 	}
 
 	err = security_bpf_map_alloc(map);
@@ -902,6 +920,9 @@ static int bpf_map_copy_value(struct bpf_map *map, void *key, void *value,
 	} else if (map->map_type == BPF_MAP_TYPE_QUEUE ||
 		   map->map_type == BPF_MAP_TYPE_STACK) {
 		err = map->ops->map_peek_elem(map, value);
+	} else if (map->map_type == BPF_MAP_TYPE_STRUCT_OPS) {
+		/* struct_ops map requires directly updating "value" */
+		err = bpf_struct_ops_map_sys_lookup_elem(map, key, value);
 	} else {
 		rcu_read_lock();
 		if (map->ops->map_lookup_elem_sys_only)
@@ -1023,7 +1044,8 @@ static int bpf_map_update_value(struct bpf_map *map, struct file *map_file,
 	/* Device-bound and CPU maps may sleep while performing an update. */
 	if (bpf_map_is_dev_bound(map))
 		return bpf_map_offload_update_elem(map, key, value, flags);
-	else if (map->map_type == BPF_MAP_TYPE_CPUMAP)
+	else if (map->map_type == BPF_MAP_TYPE_CPUMAP ||
+		 map->map_type == BPF_MAP_TYPE_STRUCT_OPS)
 		return map->ops->map_update_elem(map, key, value, flags);
 	else if (map->map_type == BPF_MAP_TYPE_SOCKHASH ||
 		 map->map_type == BPF_MAP_TYPE_SOCKMAP)
@@ -1177,6 +1199,10 @@ static int map_delete_elem(union bpf_attr *attr)
 
 	if (bpf_map_is_dev_bound(map)) {
 		err = bpf_map_offload_delete_elem(map, key);
+		goto out;
+	} else if (map->map_type == BPF_MAP_TYPE_STRUCT_OPS) {
+		/* This map requires sleepable context. */
+		err = map->ops->map_delete_elem(map, key);
 		goto out;
 	}
 
@@ -1555,7 +1581,8 @@ static int map_freeze(const union bpf_attr *attr)
 	map = __bpf_map_get(f);
 	if (IS_ERR(map))
 		return PTR_ERR(map);
-	if (map_value_has_timer(map)) {
+	if (map->map_type == BPF_MAP_TYPE_STRUCT_OPS ||
+	    map_value_has_timer(map)) {
 		fdput(f);
 		return -ENOTSUPP;
 	}
@@ -1962,6 +1989,7 @@ bpf_prog_load_check_attach(enum bpf_prog_type prog_type,
 
 		switch (prog_type) {
 		case BPF_PROG_TYPE_TRACING:
+		case BPF_PROG_TYPE_STRUCT_OPS:
 		case BPF_PROG_TYPE_EXT:
 		case BPF_PROG_TYPE_LSM:
 			break;
@@ -2176,8 +2204,9 @@ static int bpf_prog_load(union bpf_attr *attr, bpfptr_t uattr)
 		goto free_prog;
 
 	prog->aux->load_time = ktime_get_boot_ns();
-	err = bpf_obj_name_cpy(prog->aux->name, attr->prog_name);
-	if (err)
+	err = bpf_obj_name_cpy(prog->aux->name, attr->prog_name,
+			       sizeof(attr->prog_name));
+	if (err < 0)
 		goto free_prog;
 
 	/* run eBPF verifier */
@@ -3669,6 +3698,7 @@ static int bpf_map_get_info_by_fd(struct bpf_map *map,
 		info.btf_key_type_id = map->btf_key_type_id;
 		info.btf_value_type_id = map->btf_value_type_id;
 	}
+	info.btf_vmlinux_value_type_id = map->btf_vmlinux_value_type_id;
 
 	if (bpf_map_is_dev_bound(map)) {
 		err = bpf_map_offload_info_fill(&info, map);

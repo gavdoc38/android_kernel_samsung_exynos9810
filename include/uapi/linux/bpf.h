@@ -159,6 +159,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_STACK = 23,
 	BPF_MAP_TYPE_SK_STORAGE = 24,
 	BPF_MAP_TYPE_DEVMAP_HASH = 25,
+	BPF_MAP_TYPE_STRUCT_OPS = 26,
 	BPF_MAP_TYPE_RINGBUF = 27,
 	BPF_MAP_TYPE_INODE_STORAGE = 28,
 	BPF_MAP_TYPE_TASK_STORAGE = 29,
@@ -200,6 +201,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_RAW_TRACEPOINT_WRITABLE = 24,
 	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
 	BPF_PROG_TYPE_TRACING = 26,
+	BPF_PROG_TYPE_STRUCT_OPS = 27,
 	BPF_PROG_TYPE_EXT = 28,
 	BPF_PROG_TYPE_LSM = 29,
 	BPF_PROG_TYPE_SK_LOOKUP = 30,
@@ -489,6 +491,10 @@ union bpf_attr {
 		__u32	btf_fd;		/* fd pointing to a BTF type data */
 		__u32	btf_key_type_id;	/* BTF type_id of the key */
 		__u32	btf_value_type_id;	/* BTF type_id of the value */
+		__u32	btf_vmlinux_value_type_id;/* BTF type_id of a kernel-
+						   * struct stored as the
+						   * map value
+						   */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -2367,6 +2373,7 @@ struct bpf_map_info {
 	__u32 btf_id;
 	__u32 btf_key_type_id;
 	__u32 btf_value_type_id;
+	__u32 btf_vmlinux_value_type_id;
 } __attribute__((aligned(8)));
 
 struct bpf_btf_info {

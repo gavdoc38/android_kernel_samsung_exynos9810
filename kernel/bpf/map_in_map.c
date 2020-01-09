@@ -26,6 +26,10 @@ struct bpf_map *bpf_map_meta_alloc(int inner_map_ufd)
 		fdput(f);
 		return ERR_PTR(-EINVAL);
 	}
+	if (inner_map->map_type == BPF_MAP_TYPE_STRUCT_OPS) {
+		fdput(f);
+		return ERR_PTR(-ENOTSUPP);
+	}
 
 	if (!inner_map->ops->map_meta_equal) {
 		fdput(f);

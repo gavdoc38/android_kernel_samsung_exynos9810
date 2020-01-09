@@ -121,7 +121,9 @@ static int bpf_trampoline_update(struct bpf_trampoline *tr)
 	if (ip_arg)
 		flags |= BPF_TRAMP_F_IP_ARG;
 
-	err = arch_prepare_bpf_trampoline(new_image, &tr->func.model, flags,
+	err = arch_prepare_bpf_trampoline(new_image,
+					  new_image + PAGE_SIZE / 2,
+					  &tr->func.model, flags,
 					  fentry, fentry_cnt,
 					  mod_ret, mod_ret_cnt,
 					  fexit, fexit_cnt,
@@ -314,7 +316,8 @@ void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start)
 }
 
 int __weak
-arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m, u32 flags,
+arch_prepare_bpf_trampoline(void *image, void *image_end,
+			    const struct btf_func_model *m, u32 flags,
 			    struct bpf_prog **fentry_progs, int fentry_cnt,
 			    struct bpf_prog **mod_ret_progs, int mod_ret_cnt,
 			    struct bpf_prog **fexit_progs, int fexit_cnt,
