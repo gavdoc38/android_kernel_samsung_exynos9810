@@ -2344,6 +2344,7 @@ struct bpf_prog_info {
 	char name[BPF_OBJ_NAME_LEN];
 	__u32 ifindex;
 	__u32 gpl_compatible:1;
+	__u32:31; /* alignment pad */
 	__u64 netns_dev;
 	__u64 netns_ino;
 	__u32 nr_jited_ksyms;
@@ -2353,15 +2354,18 @@ struct bpf_prog_info {
 	__u32 btf_id;
 	__u32 func_info_rec_size;
 	__aligned_u64 func_info;
-	__u32 func_info_cnt;
-	__u32 line_info_cnt;
+	__u32 nr_func_info;
+	__u32 nr_line_info;
 	__aligned_u64 line_info;
 	__aligned_u64 jited_line_info;
-	__u32 jited_line_info_cnt;
+	__u32 nr_jited_line_info;
 	__u32 line_info_rec_size;
 	__u32 jited_line_info_rec_size;
+	__u32 nr_prog_tags;
+	__aligned_u64 prog_tags;
 	__u64 run_time_ns;
 	__u64 run_cnt;
+	__u64 recursion_misses;
 } __attribute__((aligned(8)));
 
 struct bpf_map_info {
@@ -2373,12 +2377,12 @@ struct bpf_map_info {
 	__u32 map_flags;
 	char  name[BPF_OBJ_NAME_LEN];
 	__u32 ifindex;
+	__u32 btf_vmlinux_value_type_id;
 	__u64 netns_dev;
 	__u64 netns_ino;
 	__u32 btf_id;
 	__u32 btf_key_type_id;
 	__u32 btf_value_type_id;
-	__u32 btf_vmlinux_value_type_id;
 } __attribute__((aligned(8)));
 
 struct bpf_btf_info {
@@ -2401,6 +2405,8 @@ struct bpf_link_info {
 		} raw_tracepoint;
 		struct {
 			__u32 attach_type;
+			__u32 target_obj_id; /* prog_id or BTF object id */
+			__u32 target_btf_id; /* BTF type id in the object */
 		} tracing;
 		struct {
 			__u64 cgroup_id;
@@ -2896,7 +2902,7 @@ struct bpf_sysctl {
 };
 
 struct bpf_func_info {
-	__u32	insn_offset;
+	__u32	insn_off;
 	__u32	type_id;
 };
 

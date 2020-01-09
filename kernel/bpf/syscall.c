@@ -1804,25 +1804,28 @@ static int bpf_prog_release(struct inode *inode, struct file *filp)
 static void bpf_prog_get_stats(const struct bpf_prog *prog,
 			       struct bpf_prog_stats *stats)
 {
-	u64 nsecs = 0, cnt = 0;
+	u64 nsecs = 0, cnt = 0, misses = 0;
 	int cpu;
 
 	for_each_possible_cpu(cpu) {
 		const struct bpf_prog_stats *st;
 		unsigned int start;
-		u64 tnsecs, tcnt;
+		u64 tnsecs, tcnt, tmisses;
 
 		st = per_cpu_ptr(prog->aux->stats, cpu);
 		do {
 			start = u64_stats_fetch_begin_irq(&st->syncp);
 			tnsecs = st->nsecs;
 			tcnt = st->cnt;
+			tmisses = st->misses;
 		} while (u64_stats_fetch_retry_irq(&st->syncp, start));
 		nsecs += tnsecs;
 		cnt += tcnt;
+		misses += tmisses;
 	}
 	stats->nsecs = nsecs;
 	stats->cnt = cnt;
+	stats->misses = misses;
 }
 
 #ifdef CONFIG_PROC_FS
@@ -1840,13 +1843,15 @@ static void bpf_prog_show_fdinfo(struct seq_file *m, struct file *filp)
 		   "prog_tag:\t%s\n"
 		   "memlock:\t%llu\n"
 		   "run_time_ns:\t%llu\n"
-		   "run_cnt:\t%llu\n",
+		   "run_cnt:\t%llu\n"
+		   "recursion_misses:\t%llu\n",
 		   prog->type,
 		   prog->jited,
 		   prog_tag,
 		   prog->pages * 1ULL << PAGE_SHIFT,
 		   stats.nsecs,
-		   stats.cnt);
+		   stats.cnt,
+		   stats.misses);
 }
 #endif
 
@@ -2512,6 +2517,9 @@ static int bpf_tracing_link_fill_link_info(const struct bpf_link *link,
 	struct bpf_tracing_link *tr_link =
 		container_of(link, struct bpf_tracing_link, link);
 	info->tracing.attach_type = tr_link->attach_type;
+	bpf_trampoline_unpack_key(tr_link->trampoline->key,
+				  &info->tracing.target_obj_id,
+				  &info->tracing.target_btf_id);
 	return 0;
 }
 
@@ -3422,15 +3430,15 @@ static int set_info_rec_size(struct bpf_prog_info *info)
 	 * _rec_size back to the info.
 	 */
 
-	if ((info->func_info_cnt || info->func_info_rec_size) &&
+	if ((info->nr_func_info || info->func_info_rec_size) &&
 	    info->func_info_rec_size != sizeof(struct bpf_func_info))
 		return -EINVAL;
 
-	if ((info->line_info_cnt || info->line_info_rec_size) &&
+	if ((info->nr_line_info || info->line_info_rec_size) &&
 	    info->line_info_rec_size != sizeof(struct bpf_line_info))
 		return -EINVAL;
 
-	if ((info->jited_line_info_cnt || info->jited_line_info_rec_size) &&
+	if ((info->nr_jited_line_info || info->jited_line_info_rec_size) &&
 	    info->jited_line_info_rec_size != sizeof(__u64))
 		return -EINVAL;
 
@@ -3498,15 +3506,16 @@ static int bpf_prog_get_info_by_fd(struct bpf_prog *prog,
 	bpf_prog_get_stats(prog, &stats);
 	info.run_time_ns = stats.nsecs;
 	info.run_cnt = stats.cnt;
+	info.recursion_misses = stats.misses;
 
 	if (!capable(CAP_SYS_ADMIN)) {
 		info.jited_prog_len = 0;
 		info.xlated_prog_len = 0;
 		info.nr_jited_ksyms = 0;
 		info.nr_jited_func_lens = 0;
-		info.func_info_cnt = 0;
-		info.line_info_cnt = 0;
-		info.jited_line_info_cnt = 0;
+		info.nr_func_info = 0;
+		info.nr_line_info = 0;
+		info.nr_jited_line_info = 0;
 		goto done;
 	}
 
@@ -3599,8 +3608,8 @@ static int bpf_prog_get_info_by_fd(struct bpf_prog *prog,
 
 		info.btf_id = btf_obj_id(prog->aux->btf);
 
-		ucnt = info.func_info_cnt;
-		info.func_info_cnt = prog->aux->func_info_cnt;
+		ucnt = info.nr_func_info;
+		info.nr_func_info = prog->aux->func_info_cnt;
 		urec_size = info.func_info_rec_size;
 		info.func_info_rec_size = krec_size;
 		if (ucnt) {
@@ -3611,26 +3620,26 @@ static int bpf_prog_get_info_by_fd(struct bpf_prog *prog,
 			if (bpf_dump_raw_ok()) {
 				char __user *user_finfo;
 				user_finfo = u64_to_user_ptr(info.func_info);
-				ucnt = min_t(u32, info.func_info_cnt, ucnt);
+				ucnt = min_t(u32, info.nr_func_info, ucnt);
 				if (copy_to_user(user_finfo, prog->aux->func_info,
 						 krec_size * ucnt))
 					return -EFAULT;
 			} else {
-				info.func_info_cnt = 0;
+				info.nr_func_info = 0;
 			}
 		}
 	} else {
-		info.func_info_cnt = 0;
+		info.nr_func_info = 0;
 	}
 
-	ulen = info.line_info_cnt;
-	info.line_info_cnt = prog->aux->nr_linfo;
-	if (info.line_info_cnt && ulen) {
+	ulen = info.nr_line_info;
+	info.nr_line_info = prog->aux->nr_linfo;
+	if (info.nr_line_info && ulen) {
 		if (bpf_dump_raw_ok()) {
 			__u8 __user *user_linfo;
 
 			user_linfo = u64_to_user_ptr(info.line_info);
-			ulen = min_t(u32, info.line_info_cnt, ulen);
+			ulen = min_t(u32, info.nr_line_info, ulen);
 			if (copy_to_user(user_linfo, prog->aux->linfo,
 					 info.line_info_rec_size * ulen))
 				return -EFAULT;
@@ -3639,18 +3648,18 @@ static int bpf_prog_get_info_by_fd(struct bpf_prog *prog,
 		}
 	}
 
-	ulen = info.jited_line_info_cnt;
+	ulen = info.nr_jited_line_info;
 	if (prog->aux->jited_linfo)
-		info.jited_line_info_cnt = prog->aux->nr_linfo;
+		info.nr_jited_line_info = prog->aux->nr_linfo;
 	else
-		info.jited_line_info_cnt = 0;
-	if (info.jited_line_info_cnt && ulen) {
+		info.nr_jited_line_info = 0;
+	if (info.nr_jited_line_info && ulen) {
 		if (bpf_dump_raw_ok()) {
 			__u64 __user *user_linfo;
 			u32 i;
 
 			user_linfo = u64_to_user_ptr(info.jited_line_info);
-			ulen = min_t(u32, info.jited_line_info_cnt, ulen);
+			ulen = min_t(u32, info.nr_jited_line_info, ulen);
 			for (i = 0; i < ulen; i++) {
 				if (put_user((__u64)(long)prog->aux->jited_linfo[i],
 					     &user_linfo[i]))
@@ -3658,6 +3667,27 @@ static int bpf_prog_get_info_by_fd(struct bpf_prog *prog,
 			}
 		} else {
 			info.jited_line_info = 0;
+		}
+	}
+
+	ulen = info.nr_prog_tags;
+	info.nr_prog_tags = prog->aux->func_cnt ? : 1;
+	if (ulen) {
+		__u8 __user (*user_prog_tags)[BPF_TAG_SIZE];
+		u32 i;
+
+		user_prog_tags = u64_to_user_ptr(info.prog_tags);
+		ulen = min_t(u32, info.nr_prog_tags, ulen);
+		if (prog->aux->func_cnt) {
+			for (i = 0; i < ulen; i++) {
+				if (copy_to_user(user_prog_tags[i],
+						 prog->aux->func[i]->tag,
+						 BPF_TAG_SIZE))
+					return -EFAULT;
+			}
+		} else if (copy_to_user(user_prog_tags[0], prog->tag,
+					BPF_TAG_SIZE)) {
+			return -EFAULT;
 		}
 	}
 

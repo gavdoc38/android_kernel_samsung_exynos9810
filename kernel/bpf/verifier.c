@@ -8996,24 +8996,24 @@ static int check_btf_func(struct bpf_verifier_env *env,
 			goto err_free;
 		}
 
-		/* check insn_offset */
+		/* check insn_off */
 		if (i == 0) {
-			if (krecord[i].insn_offset) {
+			if (krecord[i].insn_off) {
 				verbose(env,
-					"nonzero insn_offset %u for the first func info record",
-					krecord[i].insn_offset);
+					"nonzero insn_off %u for the first func info record",
+					krecord[i].insn_off);
 				ret = -EINVAL;
 				goto err_free;
 			}
-		} else if (krecord[i].insn_offset <= prev_offset) {
+		} else if (krecord[i].insn_off <= prev_offset) {
 			verbose(env,
 				"same or smaller insn offset (%u) than previous func info record (%u)",
-				krecord[i].insn_offset, prev_offset);
+				krecord[i].insn_off, prev_offset);
 			ret = -EINVAL;
 			goto err_free;
 		}
 
-		if (env->subprog_info[i].start != krecord[i].insn_offset) {
+		if (env->subprog_info[i].start != krecord[i].insn_off) {
 			verbose(env, "func_info BTF section doesn't match subprog layout in BPF program\n");
 			ret = -EINVAL;
 			goto err_free;
@@ -9029,7 +9029,7 @@ static int check_btf_func(struct bpf_verifier_env *env,
 		}
 		info_aux[i].linkage = BTF_INFO_VLEN(type->info);
 
-		prev_offset = krecord[i].insn_offset;
+		prev_offset = krecord[i].insn_off;
 		bpfptr_add(&urecord, urec_size);
 	}
 
@@ -9050,7 +9050,8 @@ static void adjust_btf_func(struct bpf_verifier_env *env)
 	if (!env->prog->aux->func_info)
 		return;
 	for (i = 0; i < env->subprog_cnt; i++)
-		env->prog->aux->func_info[i].insn_offset = env->subprog_info[i].start;
+		env->prog->aux->func_info[i].insn_off =
+			env->subprog_info[i].start;
 }
 
 #define MIN_BPF_LINEINFO_SIZE	(offsetof(struct bpf_line_info, line_col) + \
