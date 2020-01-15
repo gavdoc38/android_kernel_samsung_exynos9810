@@ -93,7 +93,17 @@ enum bpf_cmd {
 	BPF_PROG_GET_FD_BY_ID,
 	BPF_MAP_GET_FD_BY_ID,
 	BPF_OBJ_GET_INFO_BY_FD,
+	BPF_PROG_QUERY,
+	BPF_RAW_TRACEPOINT_OPEN,
+	BPF_BTF_LOAD = 18,
+	BPF_BTF_GET_FD_BY_ID = 19,
 	BPF_MAP_LOOKUP_AND_DELETE_ELEM = 21,
+	BPF_MAP_FREEZE = 22,
+	BPF_BTF_GET_NEXT_ID = 23,
+	BPF_MAP_LOOKUP_BATCH = 24,
+	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
+	BPF_MAP_UPDATE_BATCH = 26,
+	BPF_MAP_DELETE_BATCH = 27,
 };
 
 enum bpf_map_type {
@@ -240,6 +250,17 @@ union bpf_attr {
 		__u64		flags;
 	};
 
+	struct { /* struct used by BPF_MAP_*_BATCH commands */
+		__aligned_u64	in_batch;
+		__aligned_u64	out_batch;
+		__aligned_u64	keys;
+		__aligned_u64	values;
+		__u32		count;
+		__u32		map_fd;
+		__u64		elem_flags;
+		__u64		flags;
+	} batch;
+
 	struct { /* anonymous struct used by BPF_PROG_LOAD command */
 		__u32		prog_type;	/* one of enum bpf_prog_type */
 		__u32		insn_cnt;
@@ -296,8 +317,10 @@ union bpf_attr {
 			__u32		start_id;
 			__u32		prog_id;
 			__u32		map_id;
+			__u32		btf_id;
 		};
 		__u32		next_id;
+		__u32		open_flags;
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_GET_INFO_BY_FD */
@@ -305,6 +328,19 @@ union bpf_attr {
 		__u32		info_len;
 		__aligned_u64	info;
 	} info;
+
+	struct {
+		__u64 name;
+		__u32 prog_fd;
+	} raw_tracepoint;
+
+	struct { /* anonymous struct for BPF_BTF_LOAD */
+		__aligned_u64	btf;
+		__aligned_u64	btf_log_buf;
+		__u32		btf_size;
+		__u32		btf_log_size;
+		__u32		btf_log_level;
+	};
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
