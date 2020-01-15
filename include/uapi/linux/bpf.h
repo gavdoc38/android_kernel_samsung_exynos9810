@@ -106,6 +106,8 @@ enum bpf_cmd {
 	BPF_MAP_FREEZE = 22,
 	BPF_BTF_GET_NEXT_ID = 23,
 	BPF_MAP_LOOKUP_BATCH = 24,
+	BPF_MAP_UPDATE_BATCH = 26,
+	BPF_MAP_DELETE_BATCH = 27,
 };
 
 enum bpf_map_type {
