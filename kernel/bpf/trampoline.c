@@ -132,6 +132,11 @@ static int bpf_trampoline_update(struct bpf_trampoline *tr)
 	if (ip_arg)
 		flags |= BPF_TRAMP_F_IP_ARG;
 
+	/* A task may have been preempted while executing the other half of the
+	 * trampoline page. Wait before overwriting that code.
+	 */
+	synchronize_rcu_tasks();
+
 	err = arch_prepare_bpf_trampoline(new_image,
 					  new_image + PAGE_SIZE / 2,
 					  &tr->func.model, flags,
@@ -290,6 +295,8 @@ void bpf_trampoline_put(struct bpf_trampoline *tr)
 			&tr->progs_hlist[BPF_TRAMP_MODIFY_RETURN])))
 		goto out;
 
+	/* Wait for tasks to leave the trampoline before freeing its image. */
+	synchronize_rcu_tasks();
 	bpf_jit_free_exec(tr->image);
 	hlist_del(&tr->hlist);
 	kfree(tr);
