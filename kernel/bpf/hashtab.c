@@ -60,6 +60,7 @@ struct htab_elem {
 			union {
 				struct bpf_htab *htab;
 				struct pcpu_freelist_node fnode;
+				struct htab_elem *batch_flink;
 	};
 		};
 	};
@@ -129,6 +130,10 @@ free_elems:
 	bpf_map_area_free(htab->elems);
 }
 
+/* The LRU list and each hash bucket have separate locks.  Their lock order
+ * is always lru_lock followed by bucket_lock; never acquire lru_lock while
+ * holding a bucket lock.
+ */
 static struct htab_elem *prealloc_lru_pop(struct bpf_htab *htab, void *key,
 					  u32 hash)
 {
@@ -1236,6 +1241,7 @@ __htab_map_lookup_and_delete_batch(struct bpf_map *map,
 	void __user *ukeys = u64_to_user_ptr(attr->batch.keys);
 	void *ubatch = u64_to_user_ptr(attr->batch.in_batch);
 	u32 batch, max_count, size, bucket_size;
+	struct htab_elem *node_to_free = NULL;
 	u64 elem_map_flags, map_flags;
 	struct hlist_nulls_head *head;
 	struct hlist_nulls_node *n;
@@ -1368,10 +1374,12 @@ again_nocopy:
 		}
 		if (do_delete) {
 			hlist_nulls_del_rcu(&l->hash_node);
-			if (is_lru_map)
-				bpf_lru_push_free(&htab->lru, &l->lru_node);
-			else
+			if (is_lru_map) {
+				l->batch_flink = node_to_free;
+				node_to_free = l;
+			} else {
 				free_htab_elem(htab, l);
+			}
 		}
 		dst_key += key_size;
 		dst_val += value_size;
@@ -1379,6 +1387,13 @@ again_nocopy:
 
 	raw_spin_unlock_irqrestore(&b->lock, flags);
 	locked = false;
+
+	while (node_to_free) {
+		l = node_to_free;
+		node_to_free = node_to_free->batch_flink;
+		bpf_lru_push_free(&htab->lru, &l->lru_node);
+	}
+
 next_batch:
 	/* If we are not copying data, we can go to next bucket and avoid
 	 * unlocking the rcu.
