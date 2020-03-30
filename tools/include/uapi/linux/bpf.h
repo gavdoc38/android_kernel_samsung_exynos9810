@@ -105,6 +105,7 @@ enum bpf_cmd {
 	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
 	BPF_MAP_UPDATE_BATCH = 26,
 	BPF_MAP_DELETE_BATCH = 27,
+	BPF_LINK_CREATE = 28,
 };
 
 enum bpf_map_type {
@@ -354,6 +355,13 @@ union bpf_attr {
 		__u64		probe_offset;
 		__u64		probe_addr;
 	} task_fd_query;
+
+	struct { /* struct used by BPF_LINK_CREATE command */
+		__u32		prog_fd;
+		__u32		target_fd;
+		__u32		attach_type;
+		__u32		flags;
+	} link_create;
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
