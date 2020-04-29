@@ -51,8 +51,6 @@ struct bpf_cgroup_link {
 	enum bpf_attach_type type;
 };
 
-extern const struct bpf_link_ops bpf_cgroup_link_lops;
-
 struct bpf_prog_list {
 	struct list_head node;
 	struct bpf_prog *prog;
@@ -105,6 +103,7 @@ int cgroup_bpf_link_detach(struct bpf_cgroup_link *link);
 int cgroup_bpf_replace(struct bpf_link *link, struct bpf_prog *new_prog,
 		       struct bpf_prog *old_prog);
 int cgroup_bpf_link_attach(const union bpf_attr *attr, struct bpf_prog *prog);
+u64 cgroup_bpf_link_get_cgroup_id(const struct bpf_cgroup_link *link);
 int cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
 		     union bpf_attr __user *uattr);
 
