@@ -488,8 +488,7 @@ static void replace_effective_prog(struct cgroup *cgrp,
 		}
 found:
 		BUG_ON(!cg);
-		progs = rcu_dereference_protected(desc->bpf.effective[type],
-						 lockdep_is_held(&cgroup_mutex));
+		progs = rcu_dereference_protected(desc->bpf.effective[type], 1);
 		item = &progs->items[pos];
 		WRITE_ONCE(item->prog, link->link.prog);
 	}
@@ -607,16 +606,7 @@ static void bpf_cgroup_link_release(struct bpf_link *link)
 	if (!cg_link->cgroup)
 		return;
 
-	mutex_lock(&cgroup_mutex);
-	if (!cg_link->cgroup) {
-		mutex_unlock(&cgroup_mutex);
-		return;
-	}
-
-	WARN_ON(__cgroup_bpf_detach(cg_link->cgroup, NULL, cg_link,
-				    cg_link->type));
-	mutex_unlock(&cgroup_mutex);
-	cgroup_put(cg_link->cgroup);
+	WARN_ON(cgroup_bpf_link_detach(cg_link));
 }
 
 static void bpf_cgroup_link_dealloc(struct bpf_link *link)
@@ -630,6 +620,7 @@ static void bpf_cgroup_link_dealloc(struct bpf_link *link)
 const struct bpf_link_ops bpf_cgroup_link_lops = {
 	.release = bpf_cgroup_link_release,
 	.dealloc = bpf_cgroup_link_dealloc,
+	.update_prog = cgroup_bpf_replace,
 };
 
 int cgroup_bpf_link_attach(const union bpf_attr *attr, struct bpf_prog *prog)
