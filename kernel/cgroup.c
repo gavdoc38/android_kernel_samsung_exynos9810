@@ -6778,6 +6778,18 @@ out_unlock:
 	return ret;
 }
 
+u64 cgroup_bpf_link_get_cgroup_id(const struct bpf_cgroup_link *link)
+{
+	u64 cgroup_id = 0;
+
+	mutex_lock(&cgroup_mutex);
+	if (link->cgroup)
+		cgroup_id = cgroup_ino(link->cgroup);
+	mutex_unlock(&cgroup_mutex);
+
+	return cgroup_id;
+}
+
 int cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
 		      enum bpf_attach_type type)
 {

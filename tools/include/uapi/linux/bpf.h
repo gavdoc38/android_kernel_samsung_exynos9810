@@ -107,6 +107,8 @@ enum bpf_cmd {
 	BPF_MAP_DELETE_BATCH = 27,
 	BPF_LINK_CREATE = 28,
 	BPF_LINK_UPDATE = 29,
+	BPF_LINK_GET_FD_BY_ID = 30,
+	BPF_LINK_GET_NEXT_ID = 31,
 };
 
 enum bpf_map_type {
@@ -168,6 +170,15 @@ enum bpf_attach_type {
 };
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
+
+enum bpf_link_type {
+	BPF_LINK_TYPE_UNSPEC = 0,
+	BPF_LINK_TYPE_RAW_TRACEPOINT = 1,
+	BPF_LINK_TYPE_TRACING = 2,
+	BPF_LINK_TYPE_CGROUP = 3,
+
+	MAX_BPF_LINK_TYPE,
+};
 
 /* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command to the
  * given target_fd cgroup, the descendant cgroup will be able to override
@@ -321,6 +332,7 @@ union bpf_attr {
 			__u32		prog_id;
 			__u32		map_id;
 			__u32		btf_id;
+			__u32		link_id;
 		};
 		__u32		next_id;
 		__u32		open_flags;
@@ -1020,6 +1032,25 @@ struct bpf_map_info {
 	__u32 ifindex;
 	__u64 netns_dev;
 	__u64 netns_ino;
+} __attribute__((aligned(8)));
+
+struct bpf_link_info {
+	__u32 type;
+	__u32 id;
+	__u32 prog_id;
+	union {
+		struct {
+			__aligned_u64 tp_name; /* in/out: tp_name buffer ptr */
+			__u32 tp_name_len;     /* in/out: tp_name buffer len */
+		} raw_tracepoint;
+		struct {
+			__u32 attach_type;
+		} tracing;
+		struct {
+			__u64 cgroup_id;
+			__u32 attach_type;
+		} cgroup;
+	};
 } __attribute__((aligned(8)));
 
 /* User bpf_sock_ops struct to access socket values and specify request ops
