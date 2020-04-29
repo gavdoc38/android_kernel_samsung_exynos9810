@@ -6737,16 +6737,12 @@ int cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
 	return ret;
 }
 
-int cgroup_bpf_replace(struct bpf_link *link, struct bpf_prog *old_prog,
-		       struct bpf_prog *new_prog)
+int cgroup_bpf_replace(struct bpf_link *link, struct bpf_prog *new_prog,
+		       struct bpf_prog *old_prog)
 {
-	struct bpf_cgroup_link *cg_link;
+	struct bpf_cgroup_link *cg_link =
+		container_of(link, struct bpf_cgroup_link, link);
 	int ret;
-
-	if (link->ops != &bpf_cgroup_link_lops)
-		return -EINVAL;
-
-	cg_link = container_of(link, struct bpf_cgroup_link, link);
 
 	mutex_lock(&cgroup_mutex);
 	if (!cg_link->cgroup) {
@@ -6760,6 +6756,25 @@ int cgroup_bpf_replace(struct bpf_link *link, struct bpf_prog *old_prog,
 	ret = __cgroup_bpf_replace(cg_link->cgroup, cg_link, new_prog);
 out_unlock:
 	mutex_unlock(&cgroup_mutex);
+	return ret;
+}
+
+int cgroup_bpf_link_detach(struct bpf_cgroup_link *link)
+{
+	struct cgroup *cgrp;
+	int ret;
+
+	mutex_lock(&cgroup_mutex);
+	cgrp = link->cgroup;
+	if (!cgrp) {
+		ret = 0;
+		goto out_unlock;
+	}
+	ret = __cgroup_bpf_detach(cgrp, NULL, link, link->type);
+out_unlock:
+	mutex_unlock(&cgroup_mutex);
+	if (!ret && cgrp)
+		cgroup_put(cgrp);
 	return ret;
 }
 
