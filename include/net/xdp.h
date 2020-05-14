@@ -6,6 +6,8 @@
 #ifndef __LINUX_NET_XDP_H__
 #define __LINUX_NET_XDP_H__
 
+#include <linux/skbuff.h>
+
 /**
  * DOC: XDP RX-queue information
  *
@@ -53,6 +55,13 @@ struct xdp_buff {
 	struct xdp_rxq_info *rxq;
 	struct xdp_txq_info *txq;
 };
+
+/* Reserve the skb_shared_info tailroom when growing an XDP packet. */
+static inline void *xdp_data_hard_end(const struct xdp_buff *xdp)
+{
+	return xdp->data_hard_start + xdp->frame_sz -
+		SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+}
 
 static __always_inline void
 xdp_init_buff(struct xdp_buff *xdp, u32 frame_sz, struct xdp_rxq_info *rxq)

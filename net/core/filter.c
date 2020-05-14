@@ -3671,6 +3671,7 @@ BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
 		memmove(xdp->data_meta + offset,
 			xdp->data_meta, metalen);
 	xdp->data_meta += offset;
+	xdp->data = data;
 
 	return 0;
 }
@@ -3687,12 +3688,25 @@ BPF_CALL_2(bpf_xdp_adjust_tail, struct xdp_buff *, xdp, int, offset)
 {
 	void *data_end = xdp->data_end + offset;
 
-	/* only shrinking is allowed for now. */
-	if (unlikely(offset >= 0))
-		return -EINVAL;
+	if (offset > 0) {
+		void *data_hard_end;
+
+		/* The two legacy native drivers in this tree predate
+		 * frame_sz. They retain shrink support but cannot grow safely.
+		 */
+		if (unlikely(!xdp->frame_sz || xdp->frame_sz > PAGE_SIZE))
+			return -EINVAL;
+
+		data_hard_end = xdp_data_hard_end(xdp);
+		if (unlikely(data_end > data_hard_end))
+			return -EINVAL;
+	}
 
 	if (unlikely(data_end < xdp->data + ETH_HLEN))
 		return -EINVAL;
+
+	if (offset > 0)
+		memset(xdp->data_end, 0, offset);
 
 	xdp->data_end = data_end;
 
