@@ -1178,7 +1178,8 @@ static int map_lookup_and_delete_elem(union bpf_attr *attr)
 		return PTR_ERR(map);
 	bpf_map_write_active_inc(map);
 
-	if (!(f.file->f_mode & FMODE_CAN_WRITE)) {
+	if (!(map_get_sys_perms(map, f) & FMODE_CAN_READ) ||
+	    !(map_get_sys_perms(map, f) & FMODE_CAN_WRITE)) {
 		err = -EPERM;
 		goto err_put;
 	}
