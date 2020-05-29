@@ -117,6 +117,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_REUSEPORT_SOCKARRAY = 20,
 	BPF_MAP_TYPE_QUEUE = 22,
 	BPF_MAP_TYPE_STACK = 23,
+	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
 enum bpf_prog_type {
@@ -673,6 +674,7 @@ union bpf_attr {
 	FN(set_hash_invalid),		\
 	FN(get_numa_node_id),		\
 	FN(skb_change_head),		\
+	FN(xdp_adjust_head),		\
 	FN(probe_read_str),		\
 	FN(get_socket_cookie),		\
 	FN(get_socket_uid),		\
@@ -753,7 +755,16 @@ union bpf_attr {
 	FN(get_netns_cookie),		\
 	FN(get_current_ancestor_cgroup_id),	\
 	FN(sk_assign),			\
-	FN(ktime_get_boot_ns),
+	FN(ktime_get_boot_ns),		\
+	FN(seq_printf),			\
+	FN(seq_write),			\
+	FN(sk_cgroup_id),		\
+	FN(sk_ancestor_cgroup_id),	\
+	FN(ringbuf_output),		\
+	FN(ringbuf_reserve),		\
+	FN(ringbuf_submit),		\
+	FN(ringbuf_discard),		\
+	FN(ringbuf_query),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -766,6 +777,18 @@ enum bpf_func_id {
 #undef __BPF_ENUM_FN
 
 /* All flags used by eBPF helper functions, placed here. */
+
+enum {
+	BPF_RB_NO_WAKEUP	= (1ULL << 0),
+	BPF_RB_FORCE_WAKEUP	= (1ULL << 1),
+};
+
+enum {
+	BPF_RB_AVAIL_DATA = 0,
+	BPF_RB_RING_SIZE = 1,
+	BPF_RB_CONS_POS = 2,
+	BPF_RB_PROD_POS = 3,
+};
 
 /* BPF_FUNC_skb_store_bytes flags. */
 #define BPF_F_RECOMPUTE_CSUM		(1ULL << 0)
