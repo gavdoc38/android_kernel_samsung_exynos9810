@@ -27,6 +27,10 @@
 #include <linux/timekeeping.h>
 #include <linux/ctype.h>
 #include <uapi/linux/btf.h>
+#include <linux/btf.h>
+#include <linux/poll.h>
+
+#define BPF_OBJ_FLAG_MASK   (BPF_F_RDONLY | BPF_F_WRONLY)
 
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PROG_ARRAY || \
 			   (map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
@@ -34,8 +38,6 @@
 			   (map)->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS)
 #define IS_FD_HASH(map) ((map)->map_type == BPF_MAP_TYPE_HASH_OF_MAPS)
 #define IS_FD_MAP(map) (IS_FD_ARRAY(map) || IS_FD_HASH(map))
-
-#define BPF_OBJ_FLAG_MASK   (BPF_F_RDONLY | BPF_F_WRONLY)
 
 DEFINE_PER_CPU(int, bpf_prog_active);
 static DEFINE_IDR(prog_idr);
@@ -507,6 +509,16 @@ out:
 	return err;
 }
 
+static unsigned int bpf_map_poll(struct file *filp, struct poll_table_struct *pts)
+{
+	struct bpf_map *map = filp->private_data;
+
+	if (map->ops->map_poll)
+		return map->ops->map_poll(map, filp, pts);
+
+	return POLLERR;
+}
+
 const struct file_operations bpf_map_fops = {
 #ifdef CONFIG_PROC_FS
 	.show_fdinfo	= bpf_map_show_fdinfo,
@@ -515,6 +527,7 @@ const struct file_operations bpf_map_fops = {
 	.read		= bpf_dummy_read,
 	.write		= bpf_dummy_write,
 	.mmap		= bpf_map_mmap,
+	.poll		= bpf_map_poll,
 };
 
 int bpf_map_new_fd(struct bpf_map *map, int flags)
