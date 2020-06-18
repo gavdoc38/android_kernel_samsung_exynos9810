@@ -1263,30 +1263,28 @@ static void __reg_combine_32_into_64(struct bpf_reg_state *reg)
 
 static bool __reg64_bound_s32(s64 a)
 {
-	if (a >= S32_MIN && a <= S32_MAX)
-		return true;
-	return false;
+	return a > S32_MIN && a < S32_MAX;
 }
 
 static bool __reg64_bound_u32(u64 a)
 {
-	if (a >= U32_MIN && a <= U32_MAX)
-		return true;
-	return false;
+	return a > U32_MIN && a < U32_MAX;
 }
 
 static void __reg_combine_64_into_32(struct bpf_reg_state *reg)
 {
 	__mark_reg32_unbounded(reg);
 
-	if (__reg64_bound_s32(reg->smin_value))
+	if (__reg64_bound_s32(reg->smin_value) &&
+	    __reg64_bound_s32(reg->smax_value)) {
 		reg->s32_min_value = (s32)reg->smin_value;
-	if (__reg64_bound_s32(reg->smax_value))
 		reg->s32_max_value = (s32)reg->smax_value;
-	if (__reg64_bound_u32(reg->umin_value))
+	}
+	if (__reg64_bound_u32(reg->umin_value) &&
+	    __reg64_bound_u32(reg->umax_value)) {
 		reg->u32_min_value = (u32)reg->umin_value;
-	if (__reg64_bound_u32(reg->umax_value))
 		reg->u32_max_value = (u32)reg->umax_value;
+	}
 	reg_bounds_sync(reg);
 }
 
@@ -5913,6 +5911,8 @@ static void do_refine_retval_range(struct bpf_reg_state *regs, int ret_type,
 
 	ret_reg->smax_value = meta->msize_max_value;
 	ret_reg->s32_max_value = meta->msize_max_value;
+	ret_reg->smin_value = -MAX_ERRNO;
+	ret_reg->s32_min_value = -MAX_ERRNO;
 	reg_bounds_sync(ret_reg);
 }
 
@@ -6734,6 +6734,11 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 
 	if (BPF_CLASS(insn->code) != BPF_ALU64) {
 		/* 32-bit ALU ops on pointers produce (meaningless) scalars */
+		if (opcode == BPF_SUB && env->allow_ptr_leaks) {
+			__mark_reg_unknown(env, dst_reg);
+			return 0;
+		}
+
 		verbose(env, "R%d 32-bit pointer arithmetic prohibited\n",
 			dst);
 		return -EACCES;
