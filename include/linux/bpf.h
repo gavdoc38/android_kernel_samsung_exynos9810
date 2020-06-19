@@ -23,6 +23,7 @@
 #include <linux/u64_stats_sync.h>
 #include <linux/sched.h>
 #include <linux/bpfptr.h>
+#include <linux/capability.h>
 
 struct bpf_verifier_env;
 struct bpf_verifier_log;
@@ -132,6 +133,10 @@ struct bpf_map_ops {
 
 	/* bpf_iter info used to open a seq_file */
 	const struct bpf_iter_seq_info *iter_seq_info;
+
+	/* BTF name and ID of the structure allocated by map_alloc(). */
+	const char * const map_btf_name;
+	int *map_btf_id;
 };
 
 struct bpf_map {
@@ -1093,6 +1098,11 @@ struct bpf_prog *bpf_prog_get_curr_or_next(u32 *id);
 extern int sysctl_unprivileged_bpf_disabled;
 extern int sysctl_bpf_stats_enabled;
 extern struct mutex bpf_stats_enabled_mutex;
+
+static inline bool bpf_allow_ptr_to_map_access(void)
+{
+	return perfmon_capable();
+}
 
 int bpf_map_new_fd(struct bpf_map *map, int flags);
 int bpf_prog_new_fd(struct bpf_prog *prog);

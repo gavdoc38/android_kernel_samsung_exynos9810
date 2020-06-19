@@ -680,6 +680,7 @@ static const struct bpf_iter_seq_info iter_seq_info = {
 	.seq_priv_size		= sizeof(struct bpf_iter_seq_array_map_info),
 };
 
+static int array_map_btf_id;
 const struct bpf_map_ops array_map_ops = {
 	.map_meta_equal = array_map_meta_equal,
 	.map_alloc = array_map_alloc,
@@ -698,6 +699,8 @@ const struct bpf_map_ops array_map_ops = {
 	.map_set_for_each_callback_args = map_set_for_each_callback_args,
 	.map_for_each_callback = bpf_for_each_array_elem,
 	.iter_seq_info = &iter_seq_info,
+	.map_btf_name = "bpf_array",
+	.map_btf_id = &array_map_btf_id,
 };
 
 const struct bpf_map_ops percpu_array_map_ops = {

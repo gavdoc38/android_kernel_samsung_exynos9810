@@ -4605,6 +4605,42 @@ int btf_prepare_func_args(struct bpf_verifier_env *env, int subprog,
 	return 0;
 }
 
+static const struct bpf_map_ops * const btf_vmlinux_map_ops[] = {
+#define BPF_PROG_TYPE(_id, _name, prog_ctx_type, kern_ctx_type)
+#define BPF_LINK_TYPE(_id, _name)
+#define BPF_MAP_TYPE(_id, _ops) \
+	[_id] = &_ops,
+#include <linux/bpf_types.h>
+#undef BPF_PROG_TYPE
+#undef BPF_LINK_TYPE
+#undef BPF_MAP_TYPE
+};
+
+static int btf_vmlinux_map_ids_init(const struct btf *btf,
+				    struct bpf_verifier_log *log)
+{
+	const struct bpf_map_ops *ops;
+	int i, btf_id;
+
+	for (i = 0; i < ARRAY_SIZE(btf_vmlinux_map_ops); i++) {
+		ops = btf_vmlinux_map_ops[i];
+		if (!ops || (!ops->map_btf_name && !ops->map_btf_id))
+			continue;
+		if (!ops->map_btf_name || !ops->map_btf_id) {
+			bpf_log(log, "map type %d is misconfigured\n", i);
+			return -EINVAL;
+		}
+
+		btf_id = btf_find_by_name_kind(btf, ops->map_btf_name,
+					       BTF_KIND_STRUCT);
+		if (btf_id < 0)
+			return btf_id;
+		*ops->map_btf_id = btf_id;
+	}
+
+	return 0;
+}
+
 struct btf *btf_parse_vmlinux(void)
 {
 	struct btf_verifier_env *env = NULL;
@@ -4664,6 +4700,11 @@ struct btf *btf_parse_vmlinux(void)
 		err = -ENOENT;
 		goto errout;
 	}
+
+	/* Find map structures used to validate map pointer accesses. */
+	err = btf_vmlinux_map_ids_init(btf, log);
+	if (err < 0)
+		goto errout;
 
 	refcount_set(&btf->refcnt, 1);
 

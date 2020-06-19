@@ -1337,6 +1337,22 @@ static void mark_reg_not_init(struct bpf_verifier_env *env,
 	__mark_reg_not_init(env, regs + regno);
 }
 
+static void mark_btf_ld_reg(struct bpf_verifier_env *env,
+			    struct bpf_reg_state *regs, u32 regno,
+			    enum bpf_reg_type reg_type,
+			    struct btf *btf, u32 btf_id)
+{
+	if (reg_type == SCALAR_VALUE) {
+		mark_reg_unknown(env, regs, regno);
+		return;
+	}
+
+	mark_reg_known_zero(env, regs, regno);
+	regs[regno].type = PTR_TO_BTF_ID;
+	regs[regno].btf = btf;
+	regs[regno].btf_id = btf_id;
+}
+
 #define DEF_NOT_SUBREG	(0)
 static void init_reg_state(struct bpf_verifier_env *env,
 			   struct bpf_func_state *state)
@@ -3267,11 +3283,6 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 	u32 btf_id;
 	int ret;
 
-	if (atype != BPF_READ) {
-		verbose(env, "only read is supported\n");
-		return -EACCES;
-	}
-
 	if (off < 0) {
 		verbose(env,
 			"R%d is ptr_%s invalid negative access: off=%d\n",
@@ -3288,23 +3299,82 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 		return -EACCES;
 	}
 
-	if (env->ops->btf_struct_access)
+	if (env->ops->btf_struct_access) {
 		ret = env->ops->btf_struct_access(&env->log, reg->btf, t,
 						  off, size, atype, &btf_id);
-	else
+	} else {
+		if (atype != BPF_READ) {
+			verbose(env, "only read is supported\n");
+			return -EACCES;
+		}
+
 		ret = btf_struct_access(&env->log, reg->btf, t, off, size,
 					atype, &btf_id);
+	}
 	if (ret < 0)
 		return ret;
 
-	if (ret == SCALAR_VALUE) {
-		mark_reg_unknown(env, regs, value_regno);
-		return 0;
+	if (atype == BPF_READ && value_regno >= 0)
+		mark_btf_ld_reg(env, regs, value_regno, ret, reg->btf, btf_id);
+
+	return 0;
+}
+
+static int check_ptr_to_map_access(struct bpf_verifier_env *env,
+				   struct bpf_reg_state *regs,
+				   int regno, int off, int size,
+				   enum bpf_access_type atype,
+				   int value_regno)
+{
+	struct bpf_reg_state *reg = regs + regno;
+	struct bpf_map *map = reg->map_ptr;
+	const struct btf_type *t;
+	const char *tname;
+	u32 btf_id;
+	int ret;
+
+	if (!btf_vmlinux) {
+		verbose(env,
+			"map_ptr access requires CONFIG_DEBUG_INFO_BTF\n");
+		return -ENOTSUPP;
 	}
-	mark_reg_known_zero(env, regs, value_regno);
-	regs[value_regno].type = PTR_TO_BTF_ID;
-	regs[value_regno].btf = reg->btf;
-	regs[value_regno].btf_id = btf_id;
+
+	if (!map->ops->map_btf_id || !*map->ops->map_btf_id) {
+		verbose(env, "map_ptr access not supported for map type %d\n",
+			map->map_type);
+		return -ENOTSUPP;
+	}
+
+	t = btf_type_by_id(btf_vmlinux, *map->ops->map_btf_id);
+	tname = btf_name_by_offset(btf_vmlinux, t->name_off);
+
+	if (!env->allow_ptr_to_map_access) {
+		verbose(env,
+			"%s access requires CAP_PERFMON or CAP_SYS_ADMIN\n",
+			tname);
+		return -EPERM;
+	}
+
+	if (off < 0) {
+		verbose(env, "R%d is %s invalid negative access: off=%d\n",
+			regno, tname, off);
+		return -EACCES;
+	}
+
+	if (atype != BPF_READ) {
+		verbose(env, "only read from %s is supported\n", tname);
+		return -EACCES;
+	}
+
+	ret = btf_struct_access(&env->log, btf_vmlinux, t, off, size,
+				atype, &btf_id);
+	if (ret < 0)
+		return ret;
+
+	if (value_regno >= 0)
+		mark_btf_ld_reg(env, regs, value_regno, ret, btf_vmlinux,
+				btf_id);
+
 	return 0;
 }
 
@@ -3491,6 +3561,9 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			mark_reg_unknown(env, regs, value_regno);
 	} else if (reg->type == PTR_TO_BTF_ID) {
 		err = check_ptr_to_btf_access(env, regs, regno, off, size, t,
+					      value_regno);
+	} else if (reg->type == CONST_PTR_TO_MAP) {
+		err = check_ptr_to_map_access(env, regs, regno, off, size, t,
 					      value_regno);
 	} else if (reg->type == PTR_TO_RDONLY_BUF) {
 		if (t == BPF_WRITE) {
@@ -11714,6 +11787,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr)
 		env->strict_alignment = false;
 
 	env->allow_ptr_leaks = is_priv;
+	env->allow_ptr_to_map_access = bpf_allow_ptr_to_map_access();
 
 	if (is_priv)
 		env->test_state_freq = attr->prog_flags & BPF_F_TEST_STATE_FREQ;
@@ -11903,6 +11977,7 @@ int bpf_analyzer(struct bpf_prog *prog, const struct bpf_ext_analyzer_ops *ops,
 		goto skip_full_check;
 
 	env->allow_ptr_leaks = capable(CAP_SYS_ADMIN);
+	env->allow_ptr_to_map_access = bpf_allow_ptr_to_map_access();
 
 	ret = do_check_subprogs(env);
 	if (!ret)
