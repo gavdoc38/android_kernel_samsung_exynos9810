@@ -862,6 +862,15 @@ static inline void sock_reset_flag(struct sock *sk, enum sock_flags flag)
 	__clear_bit(flag, &sk->sk_flags);
 }
 
+static inline void sock_valbool_flag(struct sock *sk, enum sock_flags flag,
+				     int valbool)
+{
+	if (valbool)
+		sock_set_flag(sk, flag);
+	else
+		sock_reset_flag(sk, flag);
+}
+
 static inline bool sock_flag(const struct sock *sk, enum sock_flags flag)
 {
 	return test_bit(flag, &sk->sk_flags);
