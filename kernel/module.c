@@ -4471,7 +4471,8 @@ static int modules_open(struct inode *inode, struct file *file)
 
 	if (!err) {
 		struct seq_file *m = file->private_data;
-		m->private = kallsyms_show_value() ? NULL : (void *)8ul;
+		m->private = kallsyms_show_value(file->f_cred) ?
+			NULL : (void *)8ul;
 	}
 
 	return 0;

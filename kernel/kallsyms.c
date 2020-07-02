@@ -25,6 +25,7 @@
 #include <linux/slab.h>
 #include <linux/filter.h>
 #include <linux/compiler.h>
+#include <linux/security.h>
 #ifdef CONFIG_SEC_DUMP_SUMMARY
 #include <linux/sec_debug.h>
 #endif
@@ -710,7 +711,7 @@ static inline int kallsyms_for_perf(void)
  * Otherwise, require CAP_SYSLOG (assuming kptr_restrict isn't set to
  * block even that).
  */
-int kallsyms_show_value(void)
+int kallsyms_show_value(const struct cred *cred)
 {
 	switch (kptr_restrict) {
 	case 0:
@@ -718,7 +719,7 @@ int kallsyms_show_value(void)
 			return 1;
 	/* fallthrough */
 	case 1:
-		if (has_capability_noaudit(current, CAP_SYSLOG))
+		if (!security_capable_noaudit(cred, &init_user_ns, CAP_SYSLOG))
 			return 1;
 	/* fallthrough */
 	default:
@@ -739,7 +740,7 @@ static int kallsyms_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	reset_iter(iter, 0);
 
-	iter->show_value = kallsyms_show_value();
+	iter->show_value = kallsyms_show_value(file->f_cred);
 	return 0;
 }
 

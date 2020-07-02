@@ -13,8 +13,10 @@
 #define KSYM_SYMBOL_LEN (sizeof("%s+%#lx/%#lx [%s]") + (KSYM_NAME_LEN - 1) + \
 			 2*(BITS_PER_LONG*3/10) + (MODULE_NAME_LEN - 1) + 1)
 
+struct cred;
+
 /* How and when do we show kallsyms values? */
-extern int kallsyms_show_value(void);
+int kallsyms_show_value(const struct cred *cred);
 #ifndef CONFIG_64BIT
 # define KALLSYM_FMT "%08lx"
 #else
