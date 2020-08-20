@@ -235,6 +235,7 @@ struct tcp_sock {
 		rate_app_limited:1,  /* rate_{delivered,interval_us} limited? */
 		fastopen_connect:1, /* FASTOPEN_CONNECT sockopt */
 		is_sack_reneg:1,    /* in recovery from loss with SACK reneg? */
+		save_syn:2,	/* Save headers of SYN packet */
 		unused:5;
 	u8	nonagle     : 4,/* Disable Nagle algorithm?             */
 		thin_lto    : 1,/* Use linear timeouts for thin streams */
@@ -248,7 +249,7 @@ struct tcp_sock {
 		syn_fastopen_exp:1,/* SYN includes Fast Open exp. option */
 		syn_fastopen_ch:1, /* Active TFO re-enabling probe */
 		syn_data_acked:1,/* data in SYN is acked by SYN-ACK */
-		save_syn:1,	/* Save headers of SYN packet */
+		unused_2:1,
 		is_cwnd_limited:1;/* forward progress limited by snd_cwnd? */
 	u32	tlp_high_seq;	/* snd_nxt at the time of TLP */
 
@@ -486,7 +487,8 @@ static inline void tcp_saved_syn_free(struct tcp_sock *tp)
 
 static inline u32 tcp_saved_syn_len(const struct saved_syn *saved_syn)
 {
-	return saved_syn->network_hdrlen + saved_syn->tcp_hdrlen;
+	return saved_syn->mac_hdrlen + saved_syn->network_hdrlen +
+		saved_syn->tcp_hdrlen;
 }
 
 int tcp_skb_shift(struct sk_buff *to, struct sk_buff *from, int pcount,

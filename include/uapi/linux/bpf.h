@@ -2804,6 +2804,7 @@ enum {
  */
 #define TCP_BPF_SYN		1005	/* Copy the TCP header */
 #define TCP_BPF_SYN_IP		1006	/* Copy the IP[46] and TCP header */
+#define TCP_BPF_SYN_MAC		1007	/* Copy MAC, IP[46], and TCP header */
 
 enum {
 	BPF_LOAD_HDR_OPT_TCP_SYN = (1ULL << 0),
