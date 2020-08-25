@@ -160,6 +160,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_SK_STORAGE = 24,
 	BPF_MAP_TYPE_DEVMAP_HASH = 25,
 	BPF_MAP_TYPE_RINGBUF = 27,
+	BPF_MAP_TYPE_INODE_STORAGE = 28,
 };
 
 /* Note that tracing related programs such as

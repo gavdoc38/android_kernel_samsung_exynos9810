@@ -14,6 +14,8 @@
 #include <linux/types.h>
 #include <uapi/linux/btf.h>
 
+struct inode;
+
 #define BPF_LOCAL_STORAGE_CACHE_SIZE	16
 
 struct bpf_local_storage_map_bucket {
@@ -156,5 +158,15 @@ bpf_local_storage_alloc(void *owner,
 struct bpf_local_storage_data *
 bpf_local_storage_update(void *owner, struct bpf_local_storage_map *smap,
 			 void *value, u64 map_flags);
+
+#ifdef CONFIG_BPF_SYSCALL
+void bpf_inode_storage_free(struct inode *inode);
+extern const struct bpf_func_proto bpf_inode_storage_get_proto;
+extern const struct bpf_func_proto bpf_inode_storage_delete_proto;
+#else
+static inline void bpf_inode_storage_free(struct inode *inode)
+{
+}
+#endif
 
 #endif /* _BPF_LOCAL_STORAGE_H */

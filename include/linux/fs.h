@@ -59,6 +59,7 @@ struct fscrypt_info;
 struct fscrypt_operations;
 struct fsverity_info;
 struct fsverity_operations;
+struct bpf_local_storage;
 
 extern void __init inode_init(void);
 extern void __init inode_init_early(void);
@@ -601,6 +602,9 @@ struct inode {
 
 #ifdef CONFIG_SECURITY
 	void			*i_security;
+#endif
+#ifdef CONFIG_BPF_SYSCALL
+	struct bpf_local_storage __rcu *i_bpf_storage;
 #endif
 
 	/* Stat data, not accessed from path walking */
