@@ -1948,8 +1948,10 @@ enum bpf_func_id {
 /* BPF_FUNC_perf_event_output for sk_buff input context. */
 #define BPF_F_CTXLEN_MASK		(0xfffffULL << 32)
 
-/* BPF_FUNC_sk_storage_get flags */
-#define BPF_SK_STORAGE_GET_F_CREATE	(1ULL << 0)
+/* BPF_FUNC_<kernel_obj>_storage_get flags */
+#define BPF_LOCAL_STORAGE_GET_F_CREATE	(1ULL << 0)
+/* Kept for source compatibility with the original socket helper. */
+#define BPF_SK_STORAGE_GET_F_CREATE	BPF_LOCAL_STORAGE_GET_F_CREATE
 
 /* BPF_FUNC_read_branch_records flags. */
 #define BPF_F_GET_BRANCH_RECORDS_SIZE	(1ULL << 0)

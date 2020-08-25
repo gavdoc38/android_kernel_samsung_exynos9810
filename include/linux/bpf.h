@@ -40,6 +40,8 @@ struct btf_type;
 struct exception_table_entry;
 struct bpf_iter_aux_info;
 struct kobject;
+struct bpf_local_storage;
+struct bpf_local_storage_map;
 
 extern struct idr btf_idr;
 extern spinlock_t btf_idr_lock;
@@ -133,6 +135,14 @@ struct bpf_map_ops {
 
 	/* bpf_iter info used to open a seq_file */
 	const struct bpf_iter_seq_info *iter_seq_info;
+
+	/* Functions called by local-storage maps. */
+	int (*map_local_storage_charge)(struct bpf_local_storage_map *smap,
+					void *owner, u32 size);
+	void (*map_local_storage_uncharge)(struct bpf_local_storage_map *smap,
+					   void *owner, u32 size);
+	struct bpf_local_storage __rcu **
+		(*map_owner_storage_ptr)(void *owner);
 
 	/* BTF name and ID of the structure allocated by map_alloc(). */
 	const char * const map_btf_name;
@@ -1069,6 +1079,7 @@ void __bpf_free_used_btfs(struct bpf_prog_aux *aux,
 void bpf_map_free_id(struct bpf_map *map, bool do_idr_lock);
 
 struct bpf_map *bpf_map_get_with_uref(u32 ufd);
+struct bpf_map *bpf_map_get(u32 ufd);
 struct bpf_map *__bpf_map_get(struct fd f);
 void bpf_map_inc(struct bpf_map *map);
 void bpf_map_inc_with_uref(struct bpf_map *map);
