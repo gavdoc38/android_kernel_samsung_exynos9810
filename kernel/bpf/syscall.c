@@ -4624,12 +4624,8 @@ syscall_prog_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_btf_find_by_name_kind_proto;
 	case BPF_FUNC_sys_close:
 		return &bpf_sys_close_proto;
-	case BPF_FUNC_probe_read_kernel:
-	case BPF_FUNC_trace_printk:
-	case BPF_FUNC_copy_from_user:
-		return tracing_prog_func_proto(func_id, prog);
 	default:
-		return NULL;
+		return tracing_prog_func_proto(func_id, prog);
 	}
 }
 

@@ -839,6 +839,28 @@ const struct bpf_func_proto bpf_event_output_data_proto = {
 	.arg5_type	= ARG_CONST_SIZE_OR_ZERO,
 };
 
+BPF_CALL_3(bpf_copy_from_user, void *, dst, u32, size,
+	   const void __user *, user_ptr)
+{
+	int ret = copy_from_user(dst, user_ptr, size);
+
+	if (unlikely(ret)) {
+		memset(dst, 0, size);
+		ret = -EFAULT;
+	}
+
+	return ret;
+}
+
+const struct bpf_func_proto bpf_copy_from_user_proto = {
+	.func		= bpf_copy_from_user,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
+	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg3_type	= ARG_ANYTHING,
+};
+
 #define BPF_STRTOX_BASE_MASK 0x1F
 
 static int __bpf_strtoull(const char *buf, size_t buf_len, u64 flags,
@@ -1334,6 +1356,7 @@ out:
 }
 
 extern const struct bpf_func_proto bpf_get_current_task_proto __weak;
+const struct bpf_func_proto bpf_get_current_task_btf_proto __weak;
 extern const struct bpf_func_proto bpf_probe_read_user_proto __weak;
 extern const struct bpf_func_proto bpf_probe_read_user_str_proto __weak;
 extern const struct bpf_func_proto bpf_probe_read_kernel_proto __weak;
@@ -1368,6 +1391,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_ktime_get_ns_proto;
 	case BPF_FUNC_ktime_get_boot_ns:
 		return &bpf_ktime_get_boot_ns_proto;
+	case BPF_FUNC_ktime_get_coarse_ns:
+		return &bpf_ktime_get_coarse_ns_proto;
 	case BPF_FUNC_ringbuf_output:
 		return &bpf_ringbuf_output_proto;
 	case BPF_FUNC_ringbuf_reserve:
@@ -1414,6 +1439,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_task_pt_regs_proto;
 	case BPF_FUNC_get_current_task:
 		return &bpf_get_current_task_proto;
+	case BPF_FUNC_get_current_task_btf:
+		return &bpf_get_current_task_btf_proto;
 	case BPF_FUNC_probe_read_user:
 		return &bpf_probe_read_user_proto;
 	case BPF_FUNC_probe_read_kernel:
