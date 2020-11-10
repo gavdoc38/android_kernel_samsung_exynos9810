@@ -182,6 +182,16 @@ config DEBUG_INFO_BTF
 	  Turning this on expects presence of pahole, which converts DWARF
 	  type information into equivalent deduplicated BTF type information.
 
+config DEBUG_INFO_BTF_MODULES
+	bool "Generate BTF typeinfo for kernel modules"
+	default y
+	depends on DEBUG_INFO_BTF && MODULES
+	help
+	  Generate compact split BTF type information for kernel modules.
+	  The module type information is deduplicated against the vmlinux
+	  BTF and can be consumed by BPF loaders and introspection tools.
+	  This requires pahole version 1.19 or later.
+
 config GDB_SCRIPTS
 	bool "Provide GDB scripts for kernel debugging"
 	depends on DEBUG_INFO
