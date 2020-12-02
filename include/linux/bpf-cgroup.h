@@ -234,13 +234,16 @@ int bpf_percpu_cgroup_storage_update(struct bpf_map *map, void *key,
 /* BPF_CGROUP_INET{4,6}_BIND can return extra flags in the upper bits
  * of the return code. Bit 0 asks bind to bypass CAP_NET_BIND_SERVICE.
  */
-#define BPF_CGROUP_RUN_PROG_INET_BIND(sk, uaddr, type, bind_flags)	       \
+#define BPF_CGROUP_RUN_PROG_INET_BIND_LOCK(sk, uaddr, type, bind_flags)    \
 ({									       \
+	struct sock *__sk = (sk);					       \
 	u32 __flags = 0;						       \
 	int __ret = 0;							       \
 	if (cgroup_bpf_enabled) {					       \
-		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr, type,     \
+		lock_sock(__sk);					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(__sk, uaddr, type,   \
 							  NULL, &__flags);     \
+		release_sock(__sk);					       \
 		if (__flags & BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE)	       \
 			*(bind_flags) |= BIND_NO_CAP_NET_BIND_SERVICE;	       \
 	}								       \
@@ -398,7 +401,7 @@ static inline int bpf_percpu_cgroup_storage_update(struct bpf_map *map,
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) ({ 0; })
-#define BPF_CGROUP_RUN_PROG_INET_BIND(sk, uaddr, type, flags) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET_BIND_LOCK(sk, uaddr, type, flags) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET4_POST_BIND(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET6_POST_BIND(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET4_CONNECT(sk, uaddr) ({ 0; })
