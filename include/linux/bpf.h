@@ -29,6 +29,7 @@ struct bpf_verifier_log;
 struct perf_event;
 struct bpf_prog;
 struct bpf_map;
+struct module;
 struct bpf_func_state;
 struct sock;
 struct seq_file;
@@ -617,9 +618,15 @@ struct bpf_ctx_arg_aux {
 	u32 btf_id;
 };
 
+struct btf_mod_pair {
+	struct btf *btf;
+	struct module *module;
+};
+
 struct bpf_prog_aux {
 	atomic64_t refcnt;
 	u32 used_map_cnt;
+	u32 used_btf_cnt;
 	u32 max_ctx_offset;
 	u32 max_tp_access;
 	u32 stack_depth;
@@ -654,6 +661,7 @@ struct bpf_prog_aux {
 	const struct bpf_prog_ops *ops;
 	struct bpf_map **used_maps;
 	struct mutex used_maps_mutex; /* protects used_maps and used_map_cnt */
+	struct btf_mod_pair *used_btfs;
 	struct bpf_prog *prog;
 	struct user_struct *user;
 	u64 load_time; /* ns since boottime */
@@ -1051,6 +1059,8 @@ int __bpf_prog_charge(struct user_struct *user, u32 pages);
 void __bpf_prog_uncharge(struct user_struct *user, u32 pages);
 
 void bpf_prog_free_id(struct bpf_prog *prog, bool do_idr_lock);
+void __bpf_free_used_btfs(struct bpf_prog_aux *aux,
+			  struct btf_mod_pair *used_btfs, u32 len);
 void bpf_map_free_id(struct bpf_map *map, bool do_idr_lock);
 
 struct bpf_map *bpf_map_get_with_uref(u32 ufd);

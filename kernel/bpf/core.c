@@ -2406,6 +2406,28 @@ bool bpf_prog_array_is_empty(struct bpf_prog_array *array)
 	return true;
 }
 
+void __bpf_free_used_btfs(struct bpf_prog_aux *aux,
+			  struct btf_mod_pair *used_btfs, u32 len)
+{
+#ifdef CONFIG_BPF_SYSCALL
+	struct btf_mod_pair *btf_mod;
+	u32 i;
+
+	for (i = 0; i < len; i++) {
+		btf_mod = &used_btfs[i];
+		if (btf_mod->module)
+			module_put(btf_mod->module);
+		btf_put(btf_mod->btf);
+	}
+#endif
+}
+
+static void bpf_free_used_btfs(struct bpf_prog_aux *aux)
+{
+	__bpf_free_used_btfs(aux, aux->used_btfs, aux->used_btf_cnt);
+	kfree(aux->used_btfs);
+}
+
 int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *array,
 				__u32 __user *prog_ids, u32 cnt)
 {
@@ -2443,6 +2465,7 @@ static void bpf_prog_free_deferred(struct work_struct *work)
 	int i;
 
 	aux = container_of(work, struct bpf_prog_aux, work);
+	bpf_free_used_btfs(aux);
 	if (bpf_prog_is_dev_bound(aux))
 		bpf_prog_offload_destroy(aux->prog);
 
