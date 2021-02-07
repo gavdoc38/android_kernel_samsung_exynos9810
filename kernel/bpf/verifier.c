@@ -2445,12 +2445,14 @@ static void save_register_state(struct bpf_func_state *state,
 		state->stack[spi].slot_type[i] = STACK_SPILL;
 }
 
-/* check_stack_read/write functions track spill/fill of registers,
+/* check_stack_{read,write}_fixed_off functions track spill/fill of registers,
  * stack boundary and alignment are checked in check_mem_access()
  */
-static int check_stack_write(struct bpf_verifier_env *env,
-			     struct bpf_func_state *state, /* func where register points to */
-			     int off, int size, int value_regno, int insn_idx)
+static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
+				       /* stack frame we're writing to */
+				       struct bpf_func_state *state,
+				       int off, int size, int value_regno,
+				       int insn_idx)
 {
 	struct bpf_func_state *cur; /* state of the current function */
 	int i, slot = -off - 1, spi = slot / BPF_REG_SIZE, err;
@@ -2552,9 +2554,117 @@ static int check_stack_write(struct bpf_verifier_env *env,
 	return 0;
 }
 
-static int check_stack_read(struct bpf_verifier_env *env,
-			    struct bpf_func_state *reg_state /* func where register points to */,
-			    int off, int size, int value_regno)
+/* Write the stack through a pointer with a variable offset and track every
+ * slot in the possible range conservatively. Spilled pointers in range are
+ * not marked as written because the verifier cannot know which slot is
+ * actually overwritten, so later read propagation cannot stop here.
+ */
+static int check_stack_write_var_off(struct bpf_verifier_env *env,
+				     struct bpf_func_state *state,
+				     int ptr_regno, int off, int size,
+				     int value_regno, int insn_idx)
+{
+	struct bpf_func_state *cur;
+	struct bpf_reg_state *ptr_reg, *value_reg = NULL;
+	bool writing_zero = false, zero_used = false;
+	int min_off, max_off, i, err;
+
+	cur = env->cur_state->frame[env->cur_state->curframe];
+	ptr_reg = &cur->regs[ptr_regno];
+	min_off = ptr_reg->smin_value + off;
+	max_off = ptr_reg->smax_value + off + size;
+	if (value_regno >= 0)
+		value_reg = &cur->regs[value_regno];
+	if (value_reg && register_is_null(value_reg))
+		writing_zero = true;
+
+	err = realloc_func_state(state, round_up(-min_off, BPF_REG_SIZE),
+				 state->acquired_refs, true);
+	if (err)
+		return err;
+
+	for (i = min_off; i < max_off; i++) {
+		u8 new_type, *stype;
+		int slot, spi;
+
+		slot = -i - 1;
+		spi = slot / BPF_REG_SIZE;
+		stype = &state->stack[spi].slot_type[slot % BPF_REG_SIZE];
+
+		if (!env->allow_ptr_leaks &&
+		    *stype != STACK_MISC && *stype != STACK_ZERO) {
+			/* The write might miss this slot. Erasing an existing
+			 * spill classification could otherwise turn a pointer
+			 * into readable scalar data for an unprivileged
+			 * program.
+			 */
+			verbose(env,
+				"spilled ptr in range of var-offset stack write; insn %d, ptr off: %d",
+				insn_idx, i);
+			return -EINVAL;
+		}
+
+		state->stack[spi].spilled_ptr.type = NOT_INIT;
+
+		new_type = STACK_MISC;
+		if (writing_zero && *stype == STACK_ZERO) {
+			new_type = STACK_ZERO;
+			zero_used = true;
+		}
+		/* A variable write may not initialize each slot in its
+		 * range. Accept later reads only for privileged programs.
+		 */
+		if (*stype == STACK_INVALID && !env->allow_uninit_stack) {
+			verbose(env,
+				"uninit stack in range of var-offset write prohibited for !root; insn %d, off: %d",
+				insn_idx, i);
+			return -EINVAL;
+		}
+		*stype = new_type;
+	}
+	if (zero_used) {
+		err = mark_chain_precision(env, value_regno);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+/* Set a destination register from all possible stack slots in the range. If
+ * every byte is known zero the result is zero; otherwise it is an unknown
+ * scalar. The caller marks any spilled registers in the range as read.
+ */
+static void mark_reg_stack_read(struct bpf_verifier_env *env,
+				struct bpf_func_state *ptr_state,
+				int min_off, int max_off, int dst_regno)
+{
+	struct bpf_verifier_state *vstate = env->cur_state;
+	struct bpf_func_state *state = vstate->frame[vstate->curframe];
+	int i, slot, spi, zeros = 0;
+	u8 *stype;
+
+	for (i = min_off; i < max_off; i++) {
+		slot = -i - 1;
+		spi = slot / BPF_REG_SIZE;
+		stype = ptr_state->stack[spi].slot_type;
+		if (stype[slot % BPF_REG_SIZE] != STACK_ZERO)
+			break;
+		zeros++;
+	}
+	if (zeros == max_off - min_off) {
+		__mark_reg_const_zero(&state->regs[dst_regno]);
+		/* Precision backtracking does not support STACK_ZERO yet. */
+		state->regs[dst_regno].precise = true;
+	} else {
+		mark_reg_unknown(env, state->regs, dst_regno);
+	}
+	state->regs[dst_regno].live |= REG_LIVE_WRITTEN;
+}
+
+static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
+				      /* func where src register points to */
+				      struct bpf_func_state *reg_state,
+				      int off, int size, int dst_regno)
 {
 	struct bpf_verifier_state *vstate = env->cur_state;
 	struct bpf_func_state *state = vstate->frame[vstate->curframe];
@@ -2562,11 +2672,6 @@ static int check_stack_read(struct bpf_verifier_env *env,
 	struct bpf_reg_state *reg;
 	u8 *stype;
 
-	if (reg_state->allocated_stack <= slot) {
-		verbose(env, "invalid read from stack off %d+0 size %d\n",
-			off, size);
-		return -EACCES;
-	}
 	stype = reg_state->stack[spi].slot_type;
 	reg = &reg_state->stack[spi].spilled_ptr;
 
@@ -2576,9 +2681,9 @@ static int check_stack_read(struct bpf_verifier_env *env,
 				verbose(env, "invalid size of register fill\n");
 				return -EACCES;
 			}
-			if (value_regno >= 0) {
-				mark_reg_unknown(env, state->regs, value_regno);
-				state->regs[value_regno].live |= REG_LIVE_WRITTEN;
+			if (dst_regno >= 0) {
+				mark_reg_unknown(env, state->regs, dst_regno);
+				state->regs[dst_regno].live |= REG_LIVE_WRITTEN;
 			}
 			mark_reg_read(env, reg, reg->parent, REG_LIVE_READ64);
 			return 0;
@@ -2590,26 +2695,32 @@ static int check_stack_read(struct bpf_verifier_env *env,
 			}
 		}
 
-		if (value_regno >= 0) {
+		if (dst_regno >= 0) {
 			/* restore register state from stack */
-			copy_register_state(&state->regs[value_regno], reg);
+			copy_register_state(&state->regs[dst_regno], reg);
 			/* mark reg as written since spilled pointer state likely
 			 * has its liveness marks cleared by is_state_visited()
 			 * which resets stack/reg liveness for state transitions
 			 */
-			state->regs[value_regno].live |= REG_LIVE_WRITTEN;
+			state->regs[dst_regno].live |= REG_LIVE_WRITTEN;
+		} else if (!env->allow_ptr_leaks &&
+			   reg->type != SCALAR_VALUE) {
+			/* The caller asks whether the value may be used as
+			 * a scalar, for example by an atomic instruction. Do
+			 * not let an unprivileged program leak a spilled
+			 * pointer.
+			 */
+			verbose(env,
+				"leaking pointer from stack off %d\n", off);
+			return -EACCES;
 		}
 		mark_reg_read(env, reg, reg->parent, REG_LIVE_READ64);
 	} else {
-		int zeros = 0;
-
 		for (i = 0; i < size; i++) {
 			if (stype[(slot - i) % BPF_REG_SIZE] == STACK_MISC)
 				continue;
-			if (stype[(slot - i) % BPF_REG_SIZE] == STACK_ZERO) {
-				zeros++;
+			if (stype[(slot - i) % BPF_REG_SIZE] == STACK_ZERO)
 				continue;
-			}
 			verbose(env, "invalid read from stack off %d+%d size %d\n",
 				off, i, size);
 			return -EACCES;
@@ -2617,56 +2728,103 @@ static int check_stack_read(struct bpf_verifier_env *env,
 		mark_reg_read(env, &reg_state->stack[spi].spilled_ptr,
 			      reg_state->stack[spi].spilled_ptr.parent,
 			      REG_LIVE_READ64);
-		if (value_regno >= 0) {
-			if (zeros == size) {
-				/* any size read into register is zero extended,
-				 * so the whole register == const_zero
-				 */
-				__mark_reg_const_zero(&state->regs[value_regno]);
-				/* backtracking doesn't support STACK_ZERO yet,
-				 * so mark it precise here, so that later
-				 * backtracking can stop here.
-				 * Backtracking may not need this if this register
-				 * doesn't participate in pointer adjustment.
-				 * Forward propagation of precise flag is not
-				 * necessary either. This mark is only to stop
-				 * backtracking. Any register that contributed
-				 * to const 0 was marked precise before spill.
-				 */
-				state->regs[value_regno].precise = true;
-			} else {
-				/* have read misc data from the stack */
-				mark_reg_unknown(env, state->regs, value_regno);
-			}
-			state->regs[value_regno].live |= REG_LIVE_WRITTEN;
-		}
+		if (dst_regno >= 0)
+			mark_reg_stack_read(env, reg_state, off, off + size,
+					    dst_regno);
 	}
 	return 0;
 }
 
-static int check_stack_access(struct bpf_verifier_env *env,
-			      const struct bpf_reg_state *reg,
-			      int off, int size)
+enum stack_access_src {
+	ACCESS_DIRECT = 1,
+	ACCESS_HELPER = 2,
+};
+
+static int check_stack_range_initialized(struct bpf_verifier_env *env,
+					 int regno, int off, int access_size,
+					 bool zero_size_allowed,
+					 enum stack_access_src type,
+					 struct bpf_call_arg_meta *meta);
+
+static struct bpf_reg_state *reg_state(struct bpf_verifier_env *env, int regno)
 {
-	/* Stack accesses must be at a fixed offset, so that we
-	 * can determine what type of data were returned. See
-	 * check_stack_read().
-	 */
-	if (!tnum_is_const(reg->var_off)) {
+	return cur_regs(env) + regno;
+}
+
+/* Variable-offset reads cannot restore a spilled register precisely. Check
+ * and mark every possible source slot, then produce either zero or an unknown
+ * scalar in the destination register.
+ */
+static int check_stack_read_var_off(struct bpf_verifier_env *env,
+				    int ptr_regno, int off, int size,
+				    int dst_regno)
+{
+	struct bpf_reg_state *reg = reg_state(env, ptr_regno);
+	struct bpf_func_state *ptr_state = func(env, reg);
+	int err, min_off, max_off;
+
+	err = check_stack_range_initialized(env, ptr_regno, off, size, false,
+					    ACCESS_DIRECT, NULL);
+	if (err)
+		return err;
+
+	min_off = reg->smin_value + off;
+	max_off = reg->smax_value + off;
+	mark_reg_stack_read(env, ptr_state, min_off, max_off + size, dst_regno);
+	return 0;
+}
+
+static int check_stack_read(struct bpf_verifier_env *env,
+			    int ptr_regno, int off, int size, int dst_regno)
+{
+	struct bpf_reg_state *reg = reg_state(env, ptr_regno);
+	struct bpf_func_state *state = func(env, reg);
+	bool var_off = !tnum_is_const(reg->var_off);
+
+	if (dst_regno < 0 && var_off) {
 		char tn_buf[48];
 
 		tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
-		verbose(env, "variable stack access var_off=%s off=%d size=%d",
+		verbose(env,
+			"variable-offset stack read without destination register; var_off=%s off=%d size=%d\n",
 			tn_buf, off, size);
 		return -EACCES;
 	}
+	/* This tree uses allow_ptr_leaks as its unprivileged Spectre-v1
+	 * boundary. Variable stack offsets do not have matching ALU masking.
+	 */
+	if (!env->allow_ptr_leaks && var_off) {
+		char tn_buf[48];
 
-	if (off >= 0 || off < -MAX_BPF_STACK) {
-		verbose(env, "invalid stack off=%d size=%d\n", off, size);
+		tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
+		verbose(env,
+			"R%d variable offset stack access prohibited for !root, var_off=%s\n",
+			ptr_regno, tn_buf);
 		return -EACCES;
 	}
 
-	return 0;
+	if (!var_off)
+		return check_stack_read_fixed_off(env, state,
+						  off + reg->var_off.value,
+						  size, dst_regno);
+
+	return check_stack_read_var_off(env, ptr_regno, off, size, dst_regno);
+}
+
+static int check_stack_write(struct bpf_verifier_env *env,
+			     int ptr_regno, int off, int size,
+			     int value_regno, int insn_idx)
+{
+	struct bpf_reg_state *reg = reg_state(env, ptr_regno);
+	struct bpf_func_state *state = func(env, reg);
+
+	if (tnum_is_const(reg->var_off))
+		return check_stack_write_fixed_off(env, state,
+						   off + reg->var_off.value,
+						   size, value_regno, insn_idx);
+
+	return check_stack_write_var_off(env, state, ptr_regno, off, size,
+					     value_regno, insn_idx);
 }
 
 /* check read/write into memory region (e.g., map value, ringbuf sample, etc) */
@@ -2984,11 +3142,6 @@ static bool __is_pointer_value(bool allow_ptr_leaks,
 	return reg->type != SCALAR_VALUE;
 }
 
-static struct bpf_reg_state *reg_state(struct bpf_verifier_env *env, int regno)
-{
-	return cur_regs(env) + regno;
-}
-
 static bool is_pointer_value(struct bpf_verifier_env *env, int regno)
 {
 	return __is_pointer_value(env->allow_ptr_leaks, cur_regs(env) + regno);
@@ -3100,9 +3253,8 @@ static int check_ptr_alignment(struct bpf_verifier_env *env,
 		break;
 	case PTR_TO_STACK:
 		pointer_desc = "stack ";
-		/* The stack spill tracking logic in check_stack_write()
-		 * and check_stack_read() relies on stack accesses being
-		 * aligned.
+		/* The fixed-offset stack spill tracking logic relies on stack
+		 * accesses being aligned.
 		 */
 		strict = true;
 		break;
@@ -3574,6 +3726,82 @@ static int check_ptr_to_map_access(struct bpf_verifier_env *env,
 	return 0;
 }
 
+/* The highest valid stack offset is -1. Writes may grow the tracked stack;
+ * reads must stay inside the stack state that has already been allocated.
+ */
+static int check_stack_slot_within_bounds(int off,
+					  struct bpf_func_state *state,
+					  enum bpf_access_type type)
+{
+	int min_valid_off;
+
+	if (type == BPF_WRITE)
+		min_valid_off = -MAX_BPF_STACK;
+	else
+		min_valid_off = -state->allocated_stack;
+
+	if (off < min_valid_off || off > -1)
+		return -EACCES;
+	return 0;
+}
+
+/* Check both ends of a fixed- or variable-offset stack access. 'off'
+ * includes the pointer's fixed offset but not its variable component.
+ */
+static int check_stack_access_within_bounds(
+		struct bpf_verifier_env *env, int regno, int off,
+		int access_size, enum stack_access_src src,
+		enum bpf_access_type type)
+{
+	struct bpf_reg_state *reg = reg_state(env, regno);
+	struct bpf_func_state *state = func(env, reg);
+	const char *err_extra;
+	int min_off, max_off, err;
+
+	if (src == ACCESS_HELPER)
+		err_extra = " indirect access to";
+	else if (type == BPF_READ)
+		err_extra = " read from";
+	else
+		err_extra = " write to";
+
+	if (tnum_is_const(reg->var_off)) {
+		min_off = reg->var_off.value + off;
+		max_off = access_size > 0 ?
+			min_off + access_size - 1 : min_off;
+	} else {
+		if (reg->smax_value >= BPF_MAX_VAR_OFF ||
+		    reg->smin_value <= -BPF_MAX_VAR_OFF) {
+			verbose(env,
+				"invalid unbounded variable-offset%s stack R%d\n",
+				err_extra, regno);
+			return -EACCES;
+		}
+		min_off = reg->smin_value + off;
+		max_off = access_size > 0 ?
+			reg->smax_value + off + access_size - 1 : min_off;
+	}
+
+	err = check_stack_slot_within_bounds(min_off, state, type);
+	if (!err)
+		err = check_stack_slot_within_bounds(max_off, state, type);
+	if (!err)
+		return 0;
+
+	if (tnum_is_const(reg->var_off)) {
+		verbose(env, "invalid%s stack R%d off=%d size=%d\n",
+			err_extra, regno, off, access_size);
+	} else {
+		char tn_buf[48];
+
+		tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
+		verbose(env,
+			"invalid variable-offset%s stack R%d var_off=%s size=%d\n",
+			err_extra, regno, tn_buf, access_size);
+	}
+	return err;
+}
+
 /* check whether memory at (regno + off) is accessible for t = (read | write)
  * if t==write, value_regno is a register which value is stored into memory
  * if t==read, value_regno is a register which will receive the value from memory
@@ -3702,8 +3930,8 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		}
 
 	} else if (reg->type == PTR_TO_STACK) {
-		off += reg->var_off.value;
-		err = check_stack_access(env, reg, off, size);
+		err = check_stack_access_within_bounds(env, regno, off, size,
+						       ACCESS_DIRECT, t);
 		if (err)
 			return err;
 
@@ -3712,12 +3940,12 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		if (err)
 			return err;
 
-		if (t == BPF_WRITE)
-			err = check_stack_write(env, state, off, size,
-						value_regno, insn_idx);
+		if (t == BPF_READ)
+			err = check_stack_read(env, regno, off, size,
+					       value_regno);
 		else
-			err = check_stack_read(env, state, off, size,
-						value_regno);
+			err = check_stack_write(env, regno, off, size,
+						value_regno, insn_idx);
 	} else if (reg_is_pkt_pointer(reg)) {
 		if (t == BPF_WRITE && reg->ctx_ptr_readonly) {
 			verbose(env,
@@ -3896,35 +4124,62 @@ static int check_atomic(struct bpf_verifier_env *env, int insn_idx,
 	return 0;
 }
 
-/* when register 'regno' is passed into function that will read 'access_size'
- * bytes from that pointer, make sure that it's within stack boundary
- * and all elements of stack are initialized.
- * Unlike most pointer bounds-checking functions, this one doesn't take an
- * 'off' argument, so it has to add in reg->off itself.
+/* Verify a stack range read directly or by a helper and mark every spilled
+ * register in the possible range as read. 'off' includes the pointer's fixed
+ * offset but not its variable component.
  */
-static int check_stack_boundary(struct bpf_verifier_env *env, int regno,
-				int access_size, bool zero_size_allowed,
-				struct bpf_call_arg_meta *meta)
+static int check_stack_range_initialized(
+		struct bpf_verifier_env *env, int regno, int off,
+		int access_size, bool zero_size_allowed,
+		enum stack_access_src type, struct bpf_call_arg_meta *meta)
 {
-	struct bpf_reg_state *reg = cur_regs(env) + regno;
+	struct bpf_reg_state *reg = reg_state(env, regno);
 	struct bpf_func_state *state = func(env, reg);
-	int off, i, j, slot, spi;
+	const char *err_extra = type == ACCESS_HELPER ? " indirect" : "";
+	enum bpf_access_type bounds_check_type;
+	bool clobber = false;
+	int err, min_off, max_off, i, j, slot, spi;
 
-	/* Only allow fixed-offset stack reads */
-	if (!tnum_is_const(reg->var_off)) {
-		char tn_buf[48];
-
-		tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
-		verbose(env, "invalid variable stack read R%d var_off=%s\n",
-			regno, tn_buf);
+	if (access_size == 0 && !zero_size_allowed) {
+		verbose(env, "invalid zero-sized read\n");
 		return -EACCES;
 	}
-	off = reg->off + reg->var_off.value;
-	if (off >= 0 || off < -MAX_BPF_STACK || off + access_size > 0 ||
-	    access_size <= 0) {
-		verbose(env, "invalid stack type R%d off=%d access_size=%d\n",
-			regno, off, access_size);
-		return -EACCES;
+
+	if (type == ACCESS_HELPER) {
+		/* A helper may read, write, or do both. Initialization is
+		 * checked below unless raw mode explicitly allows output.
+		 */
+		bounds_check_type = BPF_WRITE;
+		clobber = true;
+	} else {
+		bounds_check_type = BPF_READ;
+	}
+	err = check_stack_access_within_bounds(env, regno, off, access_size,
+					       type, bounds_check_type);
+	if (err)
+		return err;
+
+	if (tnum_is_const(reg->var_off)) {
+		min_off = reg->var_off.value + off;
+		max_off = min_off;
+	} else {
+		if (!env->allow_ptr_leaks) {
+			char tn_buf[48];
+
+			tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
+			verbose(env,
+				"R%d%s variable offset stack access prohibited for !root, var_off=%s\n",
+				regno, err_extra, tn_buf);
+			return -EACCES;
+		}
+		/* A raw helper write cannot prove that every slot in a variable
+		 * range was initialized, so treat it as a normal range read.
+		 */
+		if (meta && meta->raw_mode)
+			meta = NULL;
+
+		min_off = reg->smin_value + off;
+		max_off = reg->smax_value + off;
 	}
 
 	if (meta && meta->raw_mode) {
@@ -3933,10 +4188,10 @@ static int check_stack_boundary(struct bpf_verifier_env *env, int regno,
 		return 0;
 	}
 
-	for (i = 0; i < access_size; i++) {
+	for (i = min_off; i < max_off + access_size; i++) {
 		u8 *stype;
 
-		slot = -(off + i) - 1;
+		slot = -i - 1;
 		spi = slot / BPF_REG_SIZE;
 		if (state->allocated_stack <= slot)
 			goto err;
@@ -3944,8 +4199,8 @@ static int check_stack_boundary(struct bpf_verifier_env *env, int regno,
 		if (*stype == STACK_MISC)
 			goto mark;
 		if (*stype == STACK_ZERO) {
-			/* helper can write anything into the stack */
-			*stype = STACK_MISC;
+			if (clobber)
+				*stype = STACK_MISC;
 			goto mark;
 		}
 
@@ -3956,26 +4211,41 @@ static int check_stack_boundary(struct bpf_verifier_env *env, int regno,
 		if (state->stack[spi].slot_type[0] == STACK_SPILL &&
 		    (state->stack[spi].spilled_ptr.type == SCALAR_VALUE ||
 		     env->allow_ptr_leaks)) {
-			__mark_reg_unknown(env, &state->stack[spi].spilled_ptr);
-			for (j = 0; j < BPF_REG_SIZE; j++)
-				state->stack[spi].slot_type[j] = STACK_MISC;
+			if (clobber) {
+				struct bpf_reg_state *spilled;
+
+				spilled = &state->stack[spi].spilled_ptr;
+				__mark_reg_unknown(env, spilled);
+				for (j = 0; j < BPF_REG_SIZE; j++)
+					state->stack[spi].slot_type[j] =
+						STACK_MISC;
+			}
 			goto mark;
 		}
 
 err:
-		verbose(env, "invalid indirect read from stack off %d+%d size %d\n",
-			off, i, access_size);
+		if (tnum_is_const(reg->var_off)) {
+			verbose(env,
+				"invalid%s read from stack R%d off %d+%d size %d\n",
+				err_extra, regno, min_off, i - min_off,
+				access_size);
+		} else {
+			char tn_buf[48];
+
+			tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
+			verbose(env,
+				"invalid%s read from stack R%d var_off %s+%d size %d\n",
+				err_extra, regno, tn_buf, i - min_off,
+				access_size);
+		}
 		return -EACCES;
 mark:
-		/* reading any byte out of 8-byte 'spill_slot' will cause
-		 * the whole slot to be marked as 'read'
-		 */
 		mark_reg_read(env, &state->stack[spi].spilled_ptr,
 			      state->stack[spi].spilled_ptr.parent,
 			      REG_LIVE_READ64);
 	}
 
-	return update_stack_depth(env, state, off);
+	return update_stack_depth(env, state, min_off);
 }
 
 static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
@@ -4032,8 +4302,10 @@ static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
 					   "rdwr",
 					   &env->prog->aux->max_rdwr_access);
 	case PTR_TO_STACK:
-		return check_stack_boundary(env, regno, access_size,
-					    zero_size_allowed, meta);
+		return check_stack_range_initialized(env, regno, reg->off,
+						     access_size,
+						     zero_size_allowed,
+						     ACCESS_HELPER, meta);
 	default: /* scalar_value or invalid ptr */
 		/* Allow zero-byte read from NULL, regardless of pointer type */
 		if (zero_size_allowed && access_size == 0 &&
@@ -6347,6 +6619,34 @@ static int sanitize_err(struct bpf_verifier_env *env,
 	return -EACCES;
 }
 
+/* Unprivileged stack-pointer arithmetic must stay fixed and in bounds because
+ * this verifier generation cannot Spectre-mask variable stack offsets.
+ * 'off' includes the pointer's fixed offset.
+ */
+static int check_stack_access_for_ptr_arithmetic(
+		struct bpf_verifier_env *env, int regno,
+		const struct bpf_reg_state *reg, int off)
+{
+	if (!tnum_is_const(reg->var_off)) {
+		char tn_buf[48];
+
+		tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
+		verbose(env,
+			"R%d variable stack access prohibited for !root, var_off=%s off=%d\n",
+			regno, tn_buf, off);
+		return -EACCES;
+	}
+
+	if (off >= 0 || off < -MAX_BPF_STACK) {
+		verbose(env,
+			"R%d stack pointer arithmetic goes out of range, prohibited for !root; off=%d\n",
+			regno, off);
+		return -EACCES;
+	}
+
+	return 0;
+}
+
 static int sanitize_check_bounds(struct bpf_verifier_env *env,
 				 const struct bpf_insn *insn,
 				 const struct bpf_reg_state *dst_reg)
@@ -6361,12 +6661,10 @@ static int sanitize_check_bounds(struct bpf_verifier_env *env,
 
 	switch (dst_reg->type) {
 	case PTR_TO_STACK:
-		if (check_stack_access(env, dst_reg, dst_reg->off +
-				       dst_reg->var_off.value, 1)) {
-			verbose(env, "R%d stack pointer arithmetic goes out of range, "
-				"prohibited for !root\n", dst);
+		if (check_stack_access_for_ptr_arithmetic(
+				env, dst, dst_reg,
+				dst_reg->off + dst_reg->var_off.value))
 			return -EACCES;
-		}
 		break;
 	case PTR_TO_MAP_VALUE:
 		if (check_map_access(env, dst, dst_reg->off, 1, false)) {
@@ -12315,6 +12613,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr)
 		env->strict_alignment = false;
 
 	env->allow_ptr_leaks = is_priv;
+	env->allow_uninit_stack = is_priv;
 	env->allow_ptr_to_map_access = bpf_allow_ptr_to_map_access();
 
 	if (is_priv)
@@ -12505,6 +12804,7 @@ int bpf_analyzer(struct bpf_prog *prog, const struct bpf_ext_analyzer_ops *ops,
 		goto skip_full_check;
 
 	env->allow_ptr_leaks = capable(CAP_SYS_ADMIN);
+	env->allow_uninit_stack = env->allow_ptr_leaks;
 	env->allow_ptr_to_map_access = bpf_allow_ptr_to_map_access();
 
 	ret = do_check_subprogs(env);
