@@ -118,9 +118,9 @@ void bpf_map_fd_put_ptr(struct bpf_map *map, void *ptr, bool need_defer)
 {
 	struct bpf_map *inner_map = ptr;
 
-	/* This tree has no sleepable BPF. If an inner map is removed while a
-	 * non-sleepable program can still observe it, defer its final free
-	 * until after one ordinary RCU grace period.
+	/* BPF programs in this tree execute under ordinary RCU. If an inner
+	 * map is removed while a program can still observe it, defer its final
+	 * free until after one ordinary RCU grace period.
 	 */
 	if (need_defer)
 		WRITE_ONCE(inner_map->free_after_rcu_gp, true);
