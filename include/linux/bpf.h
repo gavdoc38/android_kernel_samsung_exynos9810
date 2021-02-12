@@ -436,6 +436,7 @@ enum bpf_reg_type {
 	PTR_TO_FUNC,		 /* reg points to a bpf program function */
 	PTR_TO_MAP_KEY,		 /* reg points to a map element key */
 	PTR_TO_PERCPU_BTF_ID,	 /* reg points to a percpu kernel variable */
+	__BPF_REG_TYPE_MAX,
 };
 
 /* The information passed from prog-specific *_is_valid_access
@@ -497,6 +498,7 @@ struct bpf_verifier_ops {
 				 const struct btf_type *t, int off, int size,
 				 enum bpf_access_type atype,
 				 u32 *next_btf_id);
+	bool (*check_kfunc_call)(u32 kfunc_btf_id);
 };
 
 struct bpf_prog_offload_ops {
@@ -524,6 +526,11 @@ enum bpf_cgroup_storage_type {
  * See include/trace/bpf_probe.h
  */
 #define MAX_BPF_FUNC_ARGS 12
+
+/* The maximum number of arguments passed through registers
+ * a single function may have.
+ */
+#define MAX_BPF_FUNC_REG_ARGS 5
 
 struct bpf_func_info_aux {
 	u16 linkage;
@@ -646,6 +653,8 @@ struct btf_mod_pair {
 	struct module *module;
 };
 
+struct bpf_kfunc_desc_tab;
+
 struct bpf_prog_aux {
 	atomic64_t refcnt;
 	u32 used_map_cnt;
@@ -679,6 +688,7 @@ struct bpf_prog_aux {
 	const char *attach_func_name;
 	struct bpf_prog **func;
 	void *jit_data; /* JIT specific data. arch dependent */
+	struct bpf_kfunc_desc_tab *kfunc_tab;
 	struct latch_tree_node ksym_tnode;
 	struct list_head ksym_lnode;
 	const struct bpf_prog_ops *ops;
@@ -838,8 +848,11 @@ bool btf_struct_ids_match(struct bpf_verifier_log *log,
 struct btf_id_set;
 bool btf_id_set_contains(struct btf_id_set *set, u32 id);
 struct bpf_reg_state;
-int btf_check_func_arg_match(struct bpf_verifier_env *env, int subprog,
-			     struct bpf_reg_state *regs);
+int btf_check_subprog_arg_match(struct bpf_verifier_env *env, int subprog,
+				struct bpf_reg_state *regs);
+int btf_check_kfunc_arg_match(struct bpf_verifier_env *env,
+			      const struct btf *btf, u32 func_id,
+			      struct bpf_reg_state *regs);
 int btf_prepare_func_args(struct bpf_verifier_env *env, int subprog,
 			  struct bpf_reg_state *regs);
 int btf_check_type_match(struct bpf_verifier_log *log,
@@ -1147,6 +1160,10 @@ extern const struct bpf_prog_ops bpf_offload_prog_ops;
 struct bpf_prog *bpf_prog_get(u32 ufd);
 const struct bpf_func_proto *
 bpf_base_func_proto(enum bpf_func_id func_id);
+bool bpf_prog_has_kfunc_call(const struct bpf_prog *prog);
+const struct btf_func_model *
+bpf_jit_find_kfunc_model(const struct bpf_prog *prog,
+			 const struct bpf_insn *insn);
 struct bpf_prog *bpf_prog_get_type(u32 ufd, enum bpf_prog_type type);
 void bpf_prog_add(struct bpf_prog *prog, int i);
 void bpf_prog_inc(struct bpf_prog *prog);
@@ -1369,6 +1386,18 @@ static inline struct bpf_prog *bpf_prog_get(u32 ufd)
 
 static inline const struct bpf_func_proto *
 bpf_base_func_proto(enum bpf_func_id func_id)
+{
+	return NULL;
+}
+
+static inline bool bpf_prog_has_kfunc_call(const struct bpf_prog *prog)
+{
+	return false;
+}
+
+static inline const struct btf_func_model *
+bpf_jit_find_kfunc_model(const struct bpf_prog *prog,
+			 const struct bpf_insn *insn)
 {
 	return NULL;
 }

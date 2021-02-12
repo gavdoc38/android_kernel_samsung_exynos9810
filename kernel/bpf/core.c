@@ -2149,6 +2149,9 @@ static void bpf_prog_select_func(struct bpf_prog *fp)
  */
 struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 {
+	bool jit_needed = IS_ENABLED(CONFIG_BPF_JIT_ALWAYS_ON) ||
+			  bpf_prog_has_kfunc_call(fp);
+
 	bpf_prog_select_func(fp);
 
 	/* eBPF JITs can rewrite the program in case constant
@@ -2165,10 +2168,10 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 		fp = bpf_int_jit_compile(fp);
 		if (!fp->jited) {
 			bpf_prog_free_jited_linfo(fp);
-#ifdef CONFIG_BPF_JIT_ALWAYS_ON
-			*err = -ENOTSUPP;
-			return fp;
-#endif
+			if (jit_needed) {
+				*err = -ENOTSUPP;
+				return fp;
+			}
 		} else {
 			bpf_prog_free_unused_jited_linfo(fp);
 		}
@@ -2466,6 +2469,8 @@ static void bpf_prog_free_deferred(struct work_struct *work)
 
 	aux = container_of(work, struct bpf_prog_aux, work);
 	bpf_free_used_btfs(aux);
+	kfree(aux->kfunc_tab);
+	aux->kfunc_tab = NULL;
 	if (bpf_prog_is_dev_bound(aux))
 		bpf_prog_offload_destroy(aux->prog);
 
@@ -2607,6 +2612,11 @@ bool __weak bpf_helper_changes_pkt_data(void *func)
  * them using insn_is_zext.
  */
 bool __weak bpf_jit_needs_zext(void)
+{
+	return false;
+}
+
+bool __weak bpf_jit_supports_kfunc_call(void)
 {
 	return false;
 }

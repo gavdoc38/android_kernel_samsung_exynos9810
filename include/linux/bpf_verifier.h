@@ -175,6 +175,9 @@ struct bpf_reg_state {
 	bool precise;
 };
 
+int check_mem_reg(struct bpf_verifier_env *env, struct bpf_reg_state *reg,
+		  u32 regno, u32 mem_size);
+
 enum bpf_stack_slot_type {
 	STACK_INVALID,    /* nothing was stored in this stack slot */
 	STACK_SPILL,      /* register spilled into stack */

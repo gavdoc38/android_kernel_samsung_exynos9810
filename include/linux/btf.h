@@ -112,6 +112,7 @@ const struct btf_type *btf_type_resolve_ptr(const struct btf *btf,
 					    u32 id, u32 *res_id);
 const struct btf_type *btf_type_resolve_func_ptr(const struct btf *btf,
 						 u32 id, u32 *res_id);
+const char *btf_type_str(const struct btf_type *t);
 
 static inline bool btf_type_is_ptr(const struct btf_type *t)
 {
@@ -126,6 +127,11 @@ static inline bool btf_type_is_int(const struct btf_type *t)
 static inline bool btf_type_is_enum(const struct btf_type *t)
 {
 	return BTF_INFO_KIND(t->info) == BTF_KIND_ENUM;
+}
+
+static inline bool btf_type_is_scalar(const struct btf_type *t)
+{
+	return btf_type_is_int(t) || btf_type_is_enum(t);
 }
 
 static inline bool btf_type_is_typedef(const struct btf_type *t)
