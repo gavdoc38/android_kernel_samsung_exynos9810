@@ -1696,6 +1696,13 @@ union bpf_attr {
  * 		Execute bpf syscall with given arguments.
  * 	Return
  * 		A syscall result.
+ *
+ * long bpf_btf_find_by_name_kind(char *name, int name_sz, u32 kind, int flags)
+ * 	Description
+ * 		Find BTF type with given name and kind in vmlinux BTF or in
+ * 		module BTFs.
+ * 	Return
+ * 		Returns btf_id and btf_obj_fd in lower and upper 32 bits.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -1864,7 +1871,8 @@ union bpf_attr {
 	FN(check_mtu),			\
 	FN(for_each_map_elem),		\
 	FN(snprintf),			\
-	FN(sys_bpf),
+	FN(sys_bpf),			\
+	FN(btf_find_by_name_kind),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -1872,7 +1880,7 @@ union bpf_attr {
 #define __BPF_ENUM_FN(x) BPF_FUNC_ ## x
 enum bpf_func_id {
 	__BPF_FUNC_MAPPER(__BPF_ENUM_FN)
-	/* IDs 167-168 belong to feature families not carried yet. */
+	/* ID 168 belongs to a feature family not carried yet. */
 	BPF_FUNC_timer_init = 169,
 	BPF_FUNC_timer_set_callback = 170,
 	BPF_FUNC_timer_start = 171,

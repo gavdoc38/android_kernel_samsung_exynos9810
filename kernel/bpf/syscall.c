@@ -4420,6 +4420,8 @@ syscall_prog_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 	switch (func_id) {
 	case BPF_FUNC_sys_bpf:
 		return &bpf_sys_bpf_proto;
+	case BPF_FUNC_btf_find_by_name_kind:
+		return &bpf_btf_find_by_name_kind_proto;
 	case BPF_FUNC_probe_read_kernel:
 	case BPF_FUNC_trace_printk:
 	case BPF_FUNC_copy_from_user:
