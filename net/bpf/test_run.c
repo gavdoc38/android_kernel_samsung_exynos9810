@@ -125,7 +125,8 @@ static void *bpf_ctx_init(const union bpf_attr *kattr, u32 max_size)
 		return ERR_PTR(-ENOMEM);
 
 	if (data_in) {
-		err = bpf_check_uarg_tail_zero(data_in, max_size, size);
+		err = bpf_check_uarg_tail_zero(USER_BPFPTR(data_in),
+					       max_size, size);
 		if (err) {
 			kfree(data);
 			return ERR_PTR(err);
@@ -470,7 +471,10 @@ int bpf_prog_test_run_syscall(struct bpf_prog *prog,
 			goto out;
 		}
 	}
-	retval = bpf_prog_run_pin_on_cpu(prog, ctx);
+	/* Linux 4.9 has no sleepable migrate_disable(). Loader programs use
+	 * no per-CPU state, so run without the normal per-CPU stats wrapper.
+	 */
+	retval = prog->bpf_func(ctx, prog->insnsi);
 
 	if (copy_to_user(&uattr->test.retval, &retval, sizeof(u32))) {
 		err = -EFAULT;
