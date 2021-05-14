@@ -1374,7 +1374,7 @@ static const struct bpf_func_proto *raw_tp_prog_func_proto(enum bpf_func_id func
 	}
 }
 
-static const struct bpf_func_proto *
+const struct bpf_func_proto *
 tracing_prog_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	const struct bpf_func_proto *fn;

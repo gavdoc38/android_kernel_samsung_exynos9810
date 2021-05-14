@@ -9931,9 +9931,14 @@ static int check_map_prog_compatibility(struct bpf_verifier_env *env,
 		verbose(env, "tracing progs cannot use bpf_spin_lock yet\n");
 		return -EINVAL;
 	}
+	if (prog->aux->sleepable && map_value_has_spin_lock(map)) {
+		verbose(env, "sleepable progs cannot use bpf_spin_lock yet\n");
+		return -EINVAL;
+	}
 
 	if (map_value_has_timer(map) &&
-	    is_tracing_prog_type(resolve_prog_type(prog))) {
+	    (is_tracing_prog_type(resolve_prog_type(prog)) ||
+	     prog->aux->sleepable)) {
 		verbose(env, "tracing progs cannot use bpf_timer yet\n");
 		return -EINVAL;
 	}
@@ -9942,6 +9947,26 @@ static int check_map_prog_compatibility(struct bpf_verifier_env *env,
 	    !bpf_offload_dev_match(prog, map)) {
 		verbose(env, "offload device mismatch between prog and map\n");
 		return -EINVAL;
+	}
+
+	if (prog->aux->sleepable) {
+		switch (map->map_type) {
+		case BPF_MAP_TYPE_HASH:
+		case BPF_MAP_TYPE_LRU_HASH:
+		case BPF_MAP_TYPE_ARRAY:
+			if (!check_map_prealloc(map)) {
+				verbose(env,
+					"Sleepable programs can only use preallocated maps\n");
+				return -EINVAL;
+			}
+			break;
+		case BPF_MAP_TYPE_RINGBUF:
+			break;
+		default:
+			verbose(env,
+				"Sleepable programs can only use array, hash, and ringbuf maps\n");
+			return -EINVAL;
+		}
 	}
 
 	return 0;
@@ -11431,6 +11456,20 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 	struct bpf_trampoline *tr;
 	int ret;
 	u64 key;
+
+	if (prog->type == BPF_PROG_TYPE_SYSCALL) {
+		if (prog->aux->sleepable)
+			/* attach_btf_id checked to be zero already */
+			return 0;
+		verbose(env, "Syscall programs can only be sleepable\n");
+		return -EINVAL;
+	}
+
+	if (prog->aux->sleepable) {
+		verbose(env,
+			"Sleepable programs are limited to syscall programs on this kernel\n");
+		return -EINVAL;
+	}
 
 	if (prog->type != BPF_PROG_TYPE_TRACING &&
 	    prog->type != BPF_PROG_TYPE_EXT)

@@ -198,11 +198,12 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_TRACING = 26,
 	BPF_PROG_TYPE_EXT = 28,
 	BPF_PROG_TYPE_SK_LOOKUP = 30,
+	BPF_PROG_TYPE_SYSCALL = 31, /* a program that can execute syscalls */
 
 	/*
 	 * Android discovers this out-of-tree type through
-	 * /sys/fs/fuse/bpf_prog_type_fuse. Preserve value 32 and
-	 * leave Linux 5.15 BPF_PROG_TYPE_SYSCALL slot 31 unused.
+	 * /sys/fs/fuse/bpf_prog_type_fuse. Preserve value 32 while
+	 * using Linux 5.15's BPF_PROG_TYPE_SYSCALL slot 31 above.
 	 */
 	BPF_PROG_TYPE_FUSE = 32,
 };
@@ -338,6 +339,14 @@ enum bpf_link_type {
 
 /* The verifier internal test flag. Behavior is undefined */
 #define BPF_F_TEST_STATE_FREQ	(1U << 3)
+
+/* If BPF_F_SLEEPABLE is used in BPF_PROG_LOAD command, the verifier will
+ * restrict map and helper usage for such programs. Sleepable BPF programs can
+ * only be attached to hooks where kernel execution context allows sleeping.
+ * Such programs are allowed to use helpers that may sleep like
+ * bpf_copy_from_user().
+ */
+#define BPF_F_SLEEPABLE		(1U << 4)
 
 /* When BPF ldimm64's insn[0].src_reg != 0 then this can have
  * two extensions:
@@ -1671,6 +1680,12 @@ union bpf_attr {
  *
  *		**-EPERM** This helper cannot be used under the
  *			   current sock_ops->op.
+ *
+ * long bpf_sys_bpf(u32 cmd, void *attr, u32 attr_size)
+ * 	Description
+ * 		Execute bpf syscall with given arguments.
+ * 	Return
+ * 		A syscall result.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -1838,7 +1853,8 @@ union bpf_attr {
 	FN(sock_from_file),		\
 	FN(check_mtu),			\
 	FN(for_each_map_elem),		\
-	FN(snprintf),
+	FN(snprintf),			\
+	FN(sys_bpf),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -1846,7 +1862,7 @@ union bpf_attr {
 #define __BPF_ENUM_FN(x) BPF_FUNC_ ## x
 enum bpf_func_id {
 	__BPF_FUNC_MAPPER(__BPF_ENUM_FN)
-	/* IDs 166-168 belong to feature families not carried yet. */
+	/* IDs 167-168 belong to feature families not carried yet. */
 	BPF_FUNC_timer_init = 169,
 	BPF_FUNC_timer_set_callback = 170,
 	BPF_FUNC_timer_start = 171,
