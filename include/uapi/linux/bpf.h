@@ -1710,6 +1710,12 @@ union bpf_attr {
  * 		module BTFs.
  * 	Return
  * 		Returns btf_id and btf_obj_fd in lower and upper 32 bits.
+ *
+ * long bpf_sys_close(u32 fd)
+ * 	Description
+ * 		Execute close syscall for given FD.
+ * 	Return
+ * 		A syscall result.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -1879,7 +1885,8 @@ union bpf_attr {
 	FN(for_each_map_elem),		\
 	FN(snprintf),			\
 	FN(sys_bpf),			\
-	FN(btf_find_by_name_kind),
+	FN(btf_find_by_name_kind),	\
+	FN(sys_close),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -1887,7 +1894,6 @@ union bpf_attr {
 #define __BPF_ENUM_FN(x) BPF_FUNC_ ## x
 enum bpf_func_id {
 	__BPF_FUNC_MAPPER(__BPF_ENUM_FN)
-	/* ID 168 belongs to a feature family not carried yet. */
 	BPF_FUNC_timer_init = 169,
 	BPF_FUNC_timer_set_callback = 170,
 	BPF_FUNC_timer_start = 171,

@@ -4408,6 +4408,23 @@ const struct bpf_func_proto bpf_sys_bpf_proto = {
 	.arg3_type	= ARG_CONST_SIZE,
 };
 
+BPF_CALL_1(bpf_sys_close, u32, fd)
+{
+	/* When a BPF program calls this helper there must not be an fdget()
+	 * without a matching completed fdput(). This helper is allowed in
+	 * the following call chain only:
+	 * sys_bpf->prog_test_run->bpf_prog->bpf_sys_close
+	 */
+	return __close_fd(current->files, fd);
+}
+
+const struct bpf_func_proto bpf_sys_close_proto = {
+	.func		= bpf_sys_close,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_ANYTHING,
+};
+
 const struct bpf_func_proto * __weak
 tracing_prog_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
@@ -4422,6 +4439,8 @@ syscall_prog_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_sys_bpf_proto;
 	case BPF_FUNC_btf_find_by_name_kind:
 		return &bpf_btf_find_by_name_kind_proto;
+	case BPF_FUNC_sys_close:
+		return &bpf_sys_close_proto;
 	case BPF_FUNC_probe_read_kernel:
 	case BPF_FUNC_trace_printk:
 	case BPF_FUNC_copy_from_user:
