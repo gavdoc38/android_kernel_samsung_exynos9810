@@ -974,9 +974,10 @@ int bpf_remove_insns(struct bpf_prog *prog, u32 off, u32 cnt);
 int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
 			    struct xdp_buff *xdp, struct bpf_prog *prog);
 int xdp_do_redirect(struct net_device *dev,
-		    struct xdp_buff *xdp,
-		    struct bpf_prog *prog);
+			    struct xdp_buff *xdp,
+			    struct bpf_prog *prog);
 void xdp_do_flush_map(void);
+void bpf_clear_redirect_map(struct bpf_map *map);
 
 void bpf_warn_invalid_xdp_action(u32 act);
 

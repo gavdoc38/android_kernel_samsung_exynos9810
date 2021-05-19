@@ -3814,6 +3814,18 @@ void xdp_do_flush_map(void)
 }
 EXPORT_SYMBOL_GPL(xdp_do_flush_map);
 
+void bpf_clear_redirect_map(struct bpf_map *map)
+{
+	struct redirect_info *ri;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		ri = per_cpu_ptr(&redirect_info, cpu);
+		if (unlikely(READ_ONCE(ri->map) == map))
+			cmpxchg(&ri->map, map, NULL);
+	}
+}
+
 static void *__xdp_map_lookup_elem(struct bpf_map *map, u32 index)
 {
 	switch (map->map_type) {
@@ -3852,6 +3864,11 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 	ri->tgt_value = NULL;
 	ri->map = NULL;
 	ri->map_owner = 0;
+
+	if (unlikely(!map)) {
+		err = -EFAULT;
+		goto err;
+	}
 
 	if (unlikely(xdp_map_invalid(xdp_prog, map_owner))) {
 		err = -EFAULT;
