@@ -2244,6 +2244,7 @@ static const struct bpf_func_proto bpf_clone_redirect_proto = {
 struct redirect_info {
 	u32 ifindex;
 	u32 flags;
+	void *tgt_value;
 	struct bpf_map *map;
 	struct bpf_map *map_to_flush;
 	unsigned long   map_owner;
@@ -3825,11 +3826,14 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 	unsigned long map_owner = ri->map_owner;
 	struct bpf_map *map = ri->map;
+	u32 flags = ri->flags;
 	u32 index = ri->ifindex;
-	void *fwd = NULL;
+	void *fwd = ri->tgt_value;
 	int err;
 
 	ri->ifindex = 0;
+	ri->flags = 0;
+	ri->tgt_value = NULL;
 	ri->map = NULL;
 	ri->map_owner = 0;
 
@@ -3839,19 +3843,18 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 		goto err;
 	}
 
-	fwd = __xdp_map_lookup_elem(map, index);
-	if (!fwd) {
-		err = -EINVAL;
-		goto err;
-	}
 	if (ri->map_to_flush && ri->map_to_flush != map)
 		xdp_do_flush_map();
+	ri->map_to_flush = map;
 
-	err = __bpf_tx_xdp_map(dev, fwd, map, xdp, index);
+	if (flags & BPF_F_BROADCAST)
+		err = dev_map_enqueue_multi(xdp, dev, map,
+					    flags & BPF_F_EXCLUDE_INGRESS);
+	else
+		err = __bpf_tx_xdp_map(dev, fwd, map, xdp, index);
 	if (unlikely(err))
 		goto err;
 
-	ri->map_to_flush = map;
 	_trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index);
 	return 0;
 err:
@@ -3912,11 +3915,14 @@ static int xdp_do_generic_redirect_map(struct net_device *dev,
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 	unsigned long map_owner = ri->map_owner;
 	struct bpf_map *map = ri->map;
-	void *fwd = NULL;
+	u32 flags = ri->flags;
+	void *fwd = ri->tgt_value;
 	u32 index = ri->ifindex;
 	int err = 0;
 
 	ri->ifindex = 0;
+	ri->flags = 0;
+	ri->tgt_value = NULL;
 	ri->map = NULL;
 	ri->map_owner = 0;
 
@@ -3926,21 +3932,23 @@ static int xdp_do_generic_redirect_map(struct net_device *dev,
 		goto err;
 	}
 
-	fwd = __xdp_map_lookup_elem(map, index);
-	if (unlikely(!fwd)) {
-		err = -EINVAL;
-		goto err;
-	}
-
 	if (map->map_type == BPF_MAP_TYPE_DEVMAP ||
 	    map->map_type == BPF_MAP_TYPE_DEVMAP_HASH) {
-		struct net_device *fwd_dev = fwd;
+		if (flags & BPF_F_BROADCAST) {
+			err = dev_map_redirect_multi(dev, skb, xdp_prog, map,
+						     flags &
+						     BPF_F_EXCLUDE_INGRESS);
+		} else {
+			struct net_device *fwd_dev = fwd;
 
-		err = __xdp_generic_ok_fwd_dev(skb, fwd_dev);
+			err = __xdp_generic_ok_fwd_dev(skb, fwd_dev);
+			if (unlikely(err))
+				goto err;
+			skb->dev = fwd_dev;
+			generic_xdp_tx(skb, xdp_prog);
+		}
 		if (unlikely(err))
 			goto err;
-		skb->dev = fwd_dev;
-		generic_xdp_tx(skb, xdp_prog);
 	} else if (map->map_type == BPF_MAP_TYPE_XSKMAP) {
 		err = xsk_generic_rcv(fwd, xdp);
 		if (unlikely(err))
@@ -4000,6 +4008,7 @@ BPF_CALL_2(bpf_xdp_redirect, u32, ifindex, u64, flags)
 
 	ri->ifindex = ifindex;
 	ri->flags = flags;
+	ri->tgt_value = NULL;
 	ri->map = NULL;
 	ri->map_owner = 0;
 
@@ -4018,12 +4027,29 @@ BPF_CALL_4(bpf_xdp_redirect_map, struct bpf_map *, map, u32, ifindex, u64, flags
 	   unsigned long, map_owner)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
+	const u64 action_mask = XDP_ABORTED | XDP_DROP | XDP_PASS | XDP_TX;
+	u64 flag_mask = 0;
+	void *fwd;
 
-	if (unlikely(flags))
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP ||
+	    map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
+		flag_mask = BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS;
+	if (unlikely(flags & ~(action_mask | flag_mask)))
 		return XDP_ABORTED;
+
+	fwd = __xdp_map_lookup_elem(map, ifindex);
+	if (unlikely(!fwd) && !(flags & BPF_F_BROADCAST)) {
+		ri->ifindex = 0;
+		ri->flags = 0;
+		ri->tgt_value = NULL;
+		ri->map = NULL;
+		ri->map_owner = 0;
+		return flags & action_mask;
+	}
 
 	ri->ifindex = ifindex;
 	ri->flags = flags;
+	ri->tgt_value = fwd;
 	ri->map = map;
 	ri->map_owner = map_owner;
 

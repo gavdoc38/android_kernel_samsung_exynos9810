@@ -55,6 +55,7 @@
  */
 #include <linux/bpf.h>
 #include <linux/filter.h>
+#include <linux/if_vlan.h>
 #include <trace/events/xdp.h>
 
 #define DEV_CREATE_FLAG_MASK \
@@ -684,23 +685,10 @@ static bool dev_map_run_prog(struct bpf_dtab_netdev *dst,
 	return false;
 }
 
-int dev_map_enqueue(struct bpf_map *map, u32 key, struct xdp_buff *xdp,
-		    struct net_device *dev_rx)
+static int dev_map_xmit(struct bpf_dtab_netdev *dst, struct bpf_map *map,
+			u32 key, struct xdp_buff *xdp)
 {
-	struct bpf_dtab_netdev *dst;
 	int err;
-
-	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
-		struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
-
-		if (key >= map->max_entries)
-			return -ENOENT;
-		dst = READ_ONCE(dtab->netdev_map[key]);
-	} else {
-		dst = __dev_map_hash_lookup_elem_dtab(map, key);
-	}
-	if (!dst)
-		return -ENOENT;
 
 	if (!dev_map_run_prog(dst, xdp))
 		return 0;
@@ -718,6 +706,239 @@ int dev_map_enqueue(struct bpf_map *map, u32 key, struct xdp_buff *xdp,
 	} else {
 		__dev_map_insert_ctx(map, key);
 	}
+	return 0;
+}
+
+int dev_map_enqueue(struct bpf_map *map, u32 key, struct xdp_buff *xdp,
+		    struct net_device *dev_rx)
+{
+	struct bpf_dtab_netdev *dst;
+
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
+		struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+
+		if (key >= map->max_entries)
+			return -ENOENT;
+		dst = READ_ONCE(dtab->netdev_map[key]);
+	} else {
+		dst = __dev_map_hash_lookup_elem_dtab(map, key);
+	}
+	if (!dst)
+		return -ENOENT;
+
+	return dev_map_xmit(dst, map, key, xdp);
+}
+
+static bool dev_map_is_excluded(struct net_device *ingress,
+				struct net_device *dst,
+				bool exclude_ingress)
+{
+	struct net_device *upper;
+	struct list_head *iter;
+
+	if (!exclude_ingress)
+		return false;
+	if (ingress == dst)
+		return true;
+
+	netdev_for_each_upper_dev_rcu(ingress, upper, iter)
+		if (upper == dst)
+			return true;
+
+	return false;
+}
+
+static bool dev_map_valid_native(struct bpf_dtab_netdev *dst,
+				 struct net_device *ingress,
+				 bool exclude_ingress)
+{
+	return dst && dst->dev->netdev_ops->ndo_xdp_xmit &&
+	       !dev_map_is_excluded(ingress, dst->dev, exclude_ingress);
+}
+
+static int dev_map_clone_xdp(const struct xdp_buff *xdp,
+			     struct xdp_buff *clone)
+{
+	unsigned long data_off, data_end_off, data_meta_off;
+	void *hard_start;
+
+	data_off = xdp->data - xdp->data_hard_start;
+	data_end_off = xdp->data_end - xdp->data_hard_start;
+	data_meta_off = xdp->data_meta - xdp->data_hard_start;
+
+	hard_start = netdev_alloc_frag(data_end_off);
+	if (!hard_start)
+		return -ENOMEM;
+
+	memcpy(hard_start, xdp->data_hard_start, data_end_off);
+	*clone = *xdp;
+	clone->data_hard_start = hard_start;
+	clone->data = hard_start + data_off;
+	clone->data_end = hard_start + data_end_off;
+	clone->data_meta = hard_start + data_meta_off;
+	clone->frame_sz = data_end_off;
+
+	return 0;
+}
+
+static int dev_map_enqueue_clone(struct bpf_dtab_netdev *dst,
+				 struct bpf_map *map, u32 key,
+				 struct xdp_buff *xdp)
+{
+	struct xdp_buff clone;
+	int err;
+
+	err = dev_map_clone_xdp(xdp, &clone);
+	if (err)
+		return err;
+
+	err = dev_map_xmit(dst, map, key, &clone);
+	if (err)
+		__free_page_frag(clone.data_hard_start);
+
+	return err;
+}
+
+int dev_map_enqueue_multi(struct xdp_buff *xdp, struct net_device *dev_rx,
+			  struct bpf_map *map, bool exclude_ingress)
+{
+	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+	struct bpf_dtab_netdev *dst, *last_dst = NULL;
+	struct hlist_head *head;
+	u32 last_key = 0;
+	unsigned int i;
+	int err;
+
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
+		for (i = 0; i < map->max_entries; i++) {
+			dst = READ_ONCE(dtab->netdev_map[i]);
+			if (!dev_map_valid_native(dst, dev_rx,
+						  exclude_ingress))
+				continue;
+
+			if (last_dst) {
+				err = dev_map_enqueue_clone(last_dst, map,
+							    last_key, xdp);
+				if (err)
+					return err;
+			}
+
+			last_dst = dst;
+			last_key = i;
+		}
+	} else {
+		for (i = 0; i < dtab->n_buckets; i++) {
+			head = dev_map_index_hash(dtab, i);
+			hlist_for_each_entry_rcu(dst, head, index_hlist) {
+				if (!dev_map_valid_native(dst, dev_rx,
+							  exclude_ingress))
+					continue;
+
+				if (last_dst) {
+					err = dev_map_enqueue_clone(
+						last_dst, map, last_key, xdp);
+					if (err)
+						return err;
+				}
+
+				last_dst = dst;
+				last_key = dst->bit;
+			}
+		}
+	}
+
+	if (last_dst)
+		return dev_map_xmit(last_dst, map, last_key, xdp);
+
+	__free_page_frag(xdp->data_hard_start);
+	return 0;
+}
+
+static int dev_map_generic_redirect_one(struct bpf_dtab_netdev *dst,
+					struct sk_buff *skb,
+					struct bpf_prog *xdp_prog)
+{
+	unsigned int len;
+
+	if (unlikely(!(dst->dev->flags & IFF_UP)))
+		return -ENETDOWN;
+
+	len = dst->dev->mtu + dst->dev->hard_header_len + VLAN_HLEN;
+	if (skb->len > len)
+		return -EMSGSIZE;
+
+	skb->dev = dst->dev;
+	generic_xdp_tx(skb, xdp_prog);
+	return 0;
+}
+
+static int dev_map_redirect_clone(struct bpf_dtab_netdev *dst,
+				  struct sk_buff *skb,
+				  struct bpf_prog *xdp_prog)
+{
+	struct sk_buff *clone;
+	int err;
+
+	clone = skb_clone(skb, GFP_ATOMIC);
+	if (!clone)
+		return -ENOMEM;
+
+	err = dev_map_generic_redirect_one(dst, clone, xdp_prog);
+	if (err)
+		consume_skb(clone);
+
+	return err;
+}
+
+int dev_map_redirect_multi(struct net_device *dev, struct sk_buff *skb,
+			   struct bpf_prog *xdp_prog, struct bpf_map *map,
+			   bool exclude_ingress)
+{
+	struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+	struct bpf_dtab_netdev *dst, *last_dst = NULL;
+	struct hlist_head *head;
+	unsigned int i;
+	int err;
+
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
+		for (i = 0; i < map->max_entries; i++) {
+			dst = READ_ONCE(dtab->netdev_map[i]);
+			if (!dst ||
+			    dev_map_is_excluded(dev, dst->dev,
+						exclude_ingress))
+				continue;
+
+			if (last_dst) {
+				err = dev_map_redirect_clone(last_dst, skb,
+							     xdp_prog);
+				if (err)
+					return err;
+			}
+			last_dst = dst;
+		}
+	} else {
+		for (i = 0; i < dtab->n_buckets; i++) {
+			head = dev_map_index_hash(dtab, i);
+			hlist_for_each_entry_rcu(dst, head, index_hlist) {
+				if (dev_map_is_excluded(dev, dst->dev,
+							exclude_ingress))
+					continue;
+
+				if (last_dst) {
+					err = dev_map_redirect_clone(
+						last_dst, skb, xdp_prog);
+					if (err)
+						return err;
+				}
+				last_dst = dst;
+			}
+		}
+	}
+
+	if (last_dst)
+		return dev_map_generic_redirect_one(last_dst, skb, xdp_prog);
+
+	consume_skb(skb);
 	return 0;
 }
 

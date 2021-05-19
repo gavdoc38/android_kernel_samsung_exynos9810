@@ -43,6 +43,7 @@ struct bpf_iter_aux_info;
 struct kobject;
 struct bpf_local_storage;
 struct bpf_local_storage_map;
+struct sk_buff;
 
 extern struct idr btf_idr;
 extern spinlock_t btf_idr_lock;
@@ -1464,6 +1465,11 @@ void __dev_map_insert_ctx(struct bpf_map *map, u32 index);
 void __dev_map_flush(struct bpf_map *map);
 int dev_map_enqueue(struct bpf_map *map, u32 key, struct xdp_buff *xdp,
 		    struct net_device *dev_rx);
+int dev_map_enqueue_multi(struct xdp_buff *xdp, struct net_device *dev_rx,
+			  struct bpf_map *map, bool exclude_ingress);
+int dev_map_redirect_multi(struct net_device *dev, struct sk_buff *skb,
+			   struct bpf_prog *xdp_prog, struct bpf_map *map,
+			   bool exclude_ingress);
 bool dev_map_can_have_prog(struct bpf_map *map);
 struct bpf_cpu_map_entry *__cpu_map_lookup_elem(struct bpf_map *map, u32 key);
 void __cpu_map_insert_ctx(struct bpf_map *map, u32 index);
@@ -1604,6 +1610,23 @@ struct xdp_buff;
 static inline int dev_map_enqueue(struct bpf_map *map, u32 key,
 				  struct xdp_buff *xdp,
 				  struct net_device *dev_rx)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int dev_map_enqueue_multi(struct xdp_buff *xdp,
+					struct net_device *dev_rx,
+					struct bpf_map *map,
+					bool exclude_ingress)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int dev_map_redirect_multi(struct net_device *dev,
+					 struct sk_buff *skb,
+					 struct bpf_prog *xdp_prog,
+					 struct bpf_map *map,
+					 bool exclude_ingress)
 {
 	return -EOPNOTSUPP;
 }

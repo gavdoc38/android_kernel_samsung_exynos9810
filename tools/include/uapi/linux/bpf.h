@@ -831,8 +831,10 @@ union bpf_attr {
  *     redirect to endpoint in map
  *     @map: pointer to dev map
  *     @key: index in map to lookup
- *     @flags: --
- *     Return: XDP_REDIRECT on success or XDP_ABORT on error
+ *     @flags: lower two bits select the return code if lookup fails;
+ *             BPF_F_BROADCAST redirects to every devmap entry;
+ *             BPF_F_EXCLUDE_INGRESS omits ingress and upper devices
+ *     Return: XDP_REDIRECT on success or the action selected by flags
  *
  * u32 bpf_get_route_realm(skb)
  *     retrieve a dst's tclassid
@@ -1966,6 +1968,10 @@ enum bpf_func_id {
 
 /* BPF_FUNC_sk_storage_get flags */
 #define BPF_SK_STORAGE_GET_F_CREATE	(1ULL << 0)
+
+/* Flags for bpf_redirect_map helper. */
+#define BPF_F_BROADCAST		8ULL
+#define BPF_F_EXCLUDE_INGRESS	16ULL
 
 /* BPF_FUNC_read_branch_records flags. */
 #define BPF_F_GET_BRANCH_RECORDS_SIZE	(1ULL << 0)
