@@ -73,7 +73,7 @@ struct bpf_dtab_netdev {
 
 struct bpf_dtab {
 	struct bpf_map map;
-	struct bpf_dtab_netdev **netdev_map;
+	struct bpf_dtab_netdev __rcu **netdev_map;
 	unsigned long __percpu *flush_needed;
 	struct list_head list;
 
@@ -263,7 +263,7 @@ static void dev_map_free(struct bpf_map *map)
 		for (i = 0; i < dtab->map.max_entries; i++) {
 			struct bpf_dtab_netdev *dev;
 
-			dev = dtab->netdev_map[i];
+			dev = rcu_dereference_raw(dtab->netdev_map[i]);
 			if (!dev)
 				continue;
 
@@ -383,8 +383,11 @@ void __dev_map_flush(struct bpf_map *map)
 	u32 bit;
 
 	for_each_set_bit(bit, bitmap, map->max_entries) {
-		struct bpf_dtab_netdev *dev = READ_ONCE(dtab->netdev_map[bit]);
+		struct bpf_dtab_netdev *dev;
 		struct net_device *netdev;
+
+		dev = rcu_dereference_check(dtab->netdev_map[bit],
+					    rcu_read_lock_bh_held());
 
 		/* This is possible if the dev entry is removed by user space
 		 * between xdp redirect and flush op.
@@ -399,9 +402,9 @@ void __dev_map_flush(struct bpf_map *map)
 	}
 }
 
-/* rcu_read_lock (from syscall and BPF contexts) ensures that if a delete and/or
- * update happens in parallel here a dev_put wont happen until after reading the
- * ifindex.
+/* Elements are kept alive by RCU; either by rcu_read_lock() (from syscall) or
+ * by local_bh_disable() (from XDP calls inside NAPI). The
+ * rcu_read_lock_bh_held() below makes lockdep accept both.
  */
 struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 {
@@ -411,7 +414,8 @@ struct net_device  *__dev_map_lookup_elem(struct bpf_map *map, u32 key)
 	if (key >= map->max_entries)
 		return NULL;
 
-	dev = READ_ONCE(dtab->netdev_map[key]);
+	dev = rcu_dereference_check(dtab->netdev_map[key],
+				    rcu_read_lock_bh_held());
 	return dev ? dev->dev : NULL;
 }
 
@@ -424,7 +428,8 @@ static void *dev_map_lookup_elem(struct bpf_map *map, void *key)
 	if (index >= map->max_entries)
 		return NULL;
 
-	dev = READ_ONCE(dtab->netdev_map[index]);
+	dev = rcu_dereference_check(dtab->netdev_map[index],
+				    rcu_read_lock_bh_held());
 	return dev ? &dev->val : NULL;
 }
 
@@ -485,7 +490,8 @@ static int dev_map_delete_elem(struct bpf_map *map, void *key)
 	 * the driver tear down ensures all soft irqs are complete before
 	 * removing the net device in the case of dev_put equals zero.
 	 */
-	old_dev = xchg(&dtab->netdev_map[k], NULL);
+	old_dev = (struct bpf_dtab_netdev __force *)
+		xchg(&dtab->netdev_map[k], NULL);
 	if (old_dev)
 		call_rcu(&old_dev->rcu, __dev_map_entry_free);
 	return 0;
@@ -587,7 +593,8 @@ static int dev_map_update_elem(struct bpf_map *map, void *key, void *value,
 	 * Remembering the driver side flush operation will happen before the
 	 * net device is removed.
 	 */
-	old_dev = xchg(&dtab->netdev_map[i], dev);
+	old_dev = (struct bpf_dtab_netdev __force *)
+		xchg(&dtab->netdev_map[i], RCU_INITIALIZER(dev));
 	if (old_dev)
 		call_rcu(&old_dev->rcu, __dev_map_entry_free);
 
@@ -713,7 +720,8 @@ int dev_map_enqueue(struct bpf_map *map, u32 key, struct xdp_buff *xdp,
 
 		if (key >= map->max_entries)
 			return -ENOENT;
-		dst = READ_ONCE(dtab->netdev_map[key]);
+		dst = rcu_dereference_check(dtab->netdev_map[key],
+					    rcu_read_lock_bh_held());
 	} else {
 		dst = __dev_map_hash_lookup_elem_dtab(map, key);
 	}
@@ -805,7 +813,8 @@ int dev_map_enqueue_multi(struct xdp_buff *xdp, struct net_device *dev_rx,
 
 	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
 		for (i = 0; i < map->max_entries; i++) {
-			dst = READ_ONCE(dtab->netdev_map[i]);
+			dst = rcu_dereference_check(dtab->netdev_map[i],
+						    rcu_read_lock_bh_held());
 			if (!dev_map_valid_native(dst, dev_rx,
 						  exclude_ingress))
 				continue;
@@ -899,7 +908,8 @@ int dev_map_generic_redirect(struct bpf_map *map, u32 key,
 
 		if (key >= map->max_entries)
 			return -ENOENT;
-		dst = READ_ONCE(dtab->netdev_map[key]);
+		dst = rcu_dereference_check(dtab->netdev_map[key],
+					    rcu_read_lock_bh_held());
 	} else {
 		dst = __dev_map_hash_lookup_elem_dtab(map, key);
 	}
@@ -940,7 +950,8 @@ int dev_map_redirect_multi(struct net_device *dev, struct sk_buff *skb,
 
 	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
 		for (i = 0; i < map->max_entries; i++) {
-			dst = READ_ONCE(dtab->netdev_map[i]);
+			dst = rcu_dereference_check(dtab->netdev_map[i],
+						    rcu_read_lock_bh_held());
 			if (!dst ||
 			    dev_map_is_excluded(dev, dst->dev,
 						exclude_ingress))
@@ -1051,10 +1062,12 @@ static int dev_map_notification(struct notifier_block *notifier,
 			for (i = 0; i < dtab->map.max_entries; i++) {
 				struct bpf_dtab_netdev *dev, *odev;
 
-				dev = READ_ONCE(dtab->netdev_map[i]);
+				dev = rcu_dereference(dtab->netdev_map[i]);
 				if (!dev || netdev != dev->dev)
 					continue;
-				odev = cmpxchg(&dtab->netdev_map[i], dev, NULL);
+				odev = (struct bpf_dtab_netdev __force *)
+					cmpxchg(&dtab->netdev_map[i],
+						RCU_INITIALIZER(dev), NULL);
 				if (dev == odev)
 					call_rcu(&dev->rcu,
 						 __dev_map_entry_free);
