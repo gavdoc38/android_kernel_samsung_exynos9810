@@ -38,7 +38,7 @@
  */
 BPF_CALL_2(bpf_map_lookup_elem, struct bpf_map *, map, void *, key)
 {
-	WARN_ON_ONCE(!rcu_read_lock_held());
+	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	return (unsigned long) map->ops->map_lookup_elem(map, key);
 }
 
@@ -54,7 +54,7 @@ const struct bpf_func_proto bpf_map_lookup_elem_proto = {
 BPF_CALL_4(bpf_map_update_elem, struct bpf_map *, map, void *, key,
 	   void *, value, u64, flags)
 {
-	WARN_ON_ONCE(!rcu_read_lock_held());
+	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	return map->ops->map_update_elem(map, key, value, flags);
 }
 
@@ -71,7 +71,7 @@ const struct bpf_func_proto bpf_map_update_elem_proto = {
 
 BPF_CALL_2(bpf_map_delete_elem, struct bpf_map *, map, void *, key)
 {
-	WARN_ON_ONCE(!rcu_read_lock_held());
+	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	return map->ops->map_delete_elem(map, key);
 }
 
@@ -761,8 +761,15 @@ const struct bpf_func_proto bpf_jiffies64_proto = {
 #ifdef CONFIG_CGROUPS
 BPF_CALL_0(bpf_get_current_cgroup_id)
 {
-	struct cgroup *cgrp = task_dfl_cgroup(current);
-	return cgrp->kn->id.id;
+	struct cgroup *cgrp;
+	u64 cgrp_id;
+
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(current);
+	cgrp_id = cgrp->kn->id.id;
+	rcu_read_unlock();
+
+	return cgrp_id;
 }
 const struct bpf_func_proto bpf_get_current_cgroup_id_proto = {
 	.func		= bpf_get_current_cgroup_id,
@@ -772,13 +779,17 @@ const struct bpf_func_proto bpf_get_current_cgroup_id_proto = {
 
 BPF_CALL_1(bpf_get_current_ancestor_cgroup_id, int, ancestor_level)
 {
-	struct cgroup *cgrp = task_dfl_cgroup(current);
+	struct cgroup *cgrp;
 	struct cgroup *ancestor;
+	u64 cgrp_id;
 
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(current);
 	ancestor = cgroup_ancestor(cgrp, ancestor_level);
-	if (!ancestor)
-		return 0;
-	return cgroup_id(ancestor);
+	cgrp_id = ancestor ? cgroup_id(ancestor) : 0;
+	rcu_read_unlock();
+
+	return cgrp_id;
 }
 
 const struct bpf_func_proto bpf_get_current_ancestor_cgroup_id_proto = {
