@@ -12303,27 +12303,6 @@ static void free_states(struct bpf_verifier_env *env)
 	}
 }
 
-/* Each independent global-function pass reuses insn_aux_data. If a pass
- * fails, discard temporary access state only for instructions that pass
- * touched while preserving fields initialized before verification.
- */
-static void sanitize_insn_aux_data(struct bpf_verifier_env *env)
-{
-	struct bpf_insn_aux_data *aux;
-	struct bpf_insn *insn = env->prog->insnsi;
-	int i, class;
-
-	for (i = 0; i < env->prog->len; i++) {
-		class = BPF_CLASS(insn[i].code);
-		if (class != BPF_LDX && class != BPF_STX)
-			continue;
-		aux = &env->insn_aux_data[i];
-		if (aux->seen != env->pass_cnt)
-			continue;
-		memset(aux, 0, offsetof(typeof(*aux), orig_idx));
-	}
-}
-
 static int do_check_common(struct bpf_verifier_env *env, int subprog)
 {
 	struct bpf_verifier_state *state;
@@ -12390,8 +12369,6 @@ out:
 	while (!pop_stack(env, NULL, NULL))
 		;
 	free_states(env);
-	if (ret)
-		sanitize_insn_aux_data(env);
 	return ret;
 }
 
