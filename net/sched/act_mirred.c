@@ -193,6 +193,7 @@ static int tcf_mirred(struct sk_buff *skb, const struct tc_action *a,
 		skb2->dev = dev;
 		skb2->skb_iif = skb2->dev->ifindex;
 		skb2->pkt_type = PACKET_HOST;
+		skb_set_redirected(skb2, true);
 		netif_rx(skb2);
 	} else {
 		at = G_TC_AT(skb->tc_verd);

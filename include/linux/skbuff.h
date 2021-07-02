@@ -696,6 +696,7 @@ static inline bool skb_mstamp_after(const struct skb_mstamp *t1,
  *	@wifi_acked_valid: wifi_acked was set
  *	@wifi_acked: whether frame was acked on wifi or not
  *	@no_fcs:  Request NIC to treat last 4 bytes as Ethernet FCS
+ *	@redirected: packet was reinjected after a redirect
   *	@napi_id: id of the NAPI struct this skb came from
  *	@secmark: security marking
  *	@mark: Generic packet mark
@@ -840,7 +841,8 @@ struct sk_buff {
 #ifdef CONFIG_NET_SWITCHDEV
 	__u8			offload_fwd_mark:1;
 #endif
-	/* 2, 4 or 5 bit hole */
+	__u8			redirected:1;
+	/* 1, 3 or 4 bit hole */
 
 #ifdef CONFIG_NET_SCHED
 	__u16			tc_index;	/* traffic control index */
@@ -4076,6 +4078,21 @@ static inline u16 skb_get_queue_mapping(const struct sk_buff *skb)
 static inline void skb_copy_queue_mapping(struct sk_buff *to, const struct sk_buff *from)
 {
 	to->queue_mapping = from->queue_mapping;
+}
+
+static inline bool skb_is_redirected(const struct sk_buff *skb)
+{
+	return skb->redirected;
+}
+
+static inline void skb_set_redirected(struct sk_buff *skb, bool from_ingress)
+{
+	skb->redirected = 1;
+}
+
+static inline void skb_reset_redirect(struct sk_buff *skb)
+{
+	skb->redirected = 0;
 }
 
 static inline void skb_record_rx_queue(struct sk_buff *skb, u16 rx_queue)

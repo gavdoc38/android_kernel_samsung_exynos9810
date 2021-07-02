@@ -3926,74 +3926,66 @@ static struct netdev_rx_queue *netif_get_rxqueue(struct sk_buff *skb)
 	return rxqueue;
 }
 
-static u32 netif_receive_generic_xdp(struct sk_buff *skb,
-				     struct xdp_buff *xdp,
-				     struct bpf_prog *xdp_prog)
+u32 bpf_prog_run_generic_xdp(struct sk_buff *skb, struct xdp_buff *xdp,
+			     struct bpf_prog *xdp_prog)
 {
 	struct netdev_rx_queue *rxqueue;
-	void *orig_data, *orig_data_end;
-	u32 metalen, act = XDP_DROP;
-	int hlen, off;
-	u32 mac_len;
-
-	/* Reinjected packets coming from act_mirred or similar should
-	 * not get XDP generic processing.
-	 */
-	if (skb_cloned(skb))
-		return XDP_PASS;
-
-	/* XDP packets must be linear and must have sufficient headroom
-	 * of XDP_PACKET_HEADROOM bytes. This is the guarantee that also
-	 * native XDP provides, thus we need to do it here as well.
-	 */
-	if (skb_is_nonlinear(skb) ||
-	    skb_headroom(skb) < XDP_PACKET_HEADROOM) {
-		int hroom = XDP_PACKET_HEADROOM - skb_headroom(skb);
-		int troom = skb->tail + skb->data_len - skb->end;
-		/* In case we have to go down the path and also linearize,
-		 * then lets do the pskb_expand_head() work just once here.
-		 */
-		if (pskb_expand_head(skb,
-				     hroom > 0 ? ALIGN(hroom, NET_SKB_PAD) : 0,
-				     troom > 0 ? troom + 128 : 0, GFP_ATOMIC))
-			goto do_drop;
-		if (troom > 0 && __skb_linearize(skb))
-			goto do_drop;
-	}
+	void *orig_data, *orig_data_end, *hard_start;
+	bool orig_bcast, orig_host;
+	u32 mac_len, frame_sz;
+	__be16 orig_eth_type;
+	struct ethhdr *eth;
+	u32 metalen, act;
+	int off;
 
 	/* The XDP program wants to see the packet starting at the MAC
 	 * header.
 	 */
 	mac_len = skb->data - skb_mac_header(skb);
-	hlen = skb_headlen(skb) + mac_len;
-	xdp->data = skb->data - mac_len;
-	xdp->data_end = xdp->data + hlen;
-	xdp->data_meta = xdp->data;
-	xdp->data_hard_start = skb->data - skb_headroom(skb);
-	xdp->frame_sz = skb_end_pointer(skb) -
-			(unsigned char *)xdp->data_hard_start;
-	orig_data_end = xdp->data_end;
-	orig_data = xdp->data;
+	hard_start = skb->data - skb_headroom(skb);
+	frame_sz = (void *)skb_end_pointer(skb) - hard_start;
+	frame_sz += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 
 	rxqueue = netif_get_rxqueue(skb);
-	xdp->rxq = &rxqueue->xdp_rxq;
-	xdp->txq = NULL;
+	xdp_init_buff(xdp, frame_sz, &rxqueue->xdp_rxq);
+	xdp_prepare_buff(xdp, hard_start, skb_headroom(skb) - mac_len,
+			 skb_headlen(skb) + mac_len, true);
+
+	orig_data_end = xdp->data_end;
+	orig_data = xdp->data;
+	eth = (struct ethhdr *)xdp->data;
+	orig_host = ether_addr_equal_64bits(eth->h_dest, skb->dev->dev_addr);
+	orig_bcast = is_multicast_ether_addr_64bits(eth->h_dest);
+	orig_eth_type = eth->h_proto;
 
 	act = bpf_prog_run_xdp(xdp_prog, xdp);
 
 	off = xdp->data - orig_data;
-	if (off > 0)
-		__skb_pull(skb, off);
-	else if (off < 0)
-		__skb_push(skb, -off);
+	if (off) {
+		if (off > 0)
+			__skb_pull(skb, off);
+		else
+			__skb_push(skb, -off);
 
-	/* check if bpf_xdp_adjust_tail was used. it can only "shrink"
-	 * pckt.
-	 */
-	off = orig_data_end - xdp->data_end;
+		skb->mac_header += off;
+		skb_reset_network_header(skb);
+	}
+
+	/* Check if bpf_xdp_adjust_tail was used. */
+	off = xdp->data_end - orig_data_end;
 	if (off != 0) {
 		skb_set_tail_pointer(skb, xdp->data_end - xdp->data);
-		skb->len -= off;
+		skb->len += off;
+	}
+
+	eth = (struct ethhdr *)xdp->data;
+	if (orig_eth_type != eth->h_proto ||
+	    orig_host != ether_addr_equal_64bits(eth->h_dest,
+						   skb->dev->dev_addr) ||
+	    orig_bcast != is_multicast_ether_addr_64bits(eth->h_dest)) {
+		__skb_push(skb, ETH_HLEN);
+		skb->pkt_type = PACKET_HOST;
+		skb->protocol = eth_type_trans(skb, skb->dev);
 	}
 
 	switch (act) {
@@ -4005,6 +3997,49 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 		metalen = xdp->data - xdp->data_meta;
 		if (metalen)
 			skb_metadata_set(skb, metalen);
+		break;
+	}
+
+	return act;
+}
+
+static u32 netif_receive_generic_xdp(struct sk_buff *skb,
+				     struct xdp_buff *xdp,
+				     struct bpf_prog *xdp_prog)
+{
+	u32 act = XDP_DROP;
+
+	/* Reinjected packets coming from act_mirred or similar should
+	 * not get XDP generic processing.
+	 */
+	if (skb_is_redirected(skb))
+		return XDP_PASS;
+
+	/* XDP packets must be linear and must have sufficient headroom
+	 * of XDP_PACKET_HEADROOM bytes. This is the guarantee that also
+	 * native XDP provides, thus we need to do it here as well.
+	 */
+	if (skb_cloned(skb) || skb_is_nonlinear(skb) ||
+	    skb_headroom(skb) < XDP_PACKET_HEADROOM) {
+		int hroom = XDP_PACKET_HEADROOM - skb_headroom(skb);
+		int troom = skb->tail + skb->data_len - skb->end;
+
+		/* In case we have to go down the path and also linearize,
+		 * then lets do the pskb_expand_head() work just once here.
+		 */
+		if (pskb_expand_head(skb,
+				     hroom > 0 ? ALIGN(hroom, NET_SKB_PAD) : 0,
+				     troom > 0 ? troom + 128 : 0, GFP_ATOMIC))
+			goto do_drop;
+		if (troom > 0 && __skb_linearize(skb))
+			goto do_drop;
+	}
+
+	act = bpf_prog_run_generic_xdp(skb, xdp, xdp_prog);
+	switch (act) {
+	case XDP_REDIRECT:
+	case XDP_TX:
+	case XDP_PASS:
 		break;
 
 	default:
@@ -4603,17 +4638,6 @@ static int generic_xdp_install(struct net_device *dev, struct netdev_bpf *xdp)
 	struct bpf_prog *old = rtnl_dereference(dev->xdp_prog);
 	struct bpf_prog *new = xdp->prog;
 	int ret = 0;
-
-	if (new) {
-		u32 i;
-
-		for (i = 0; i < new->aux->used_map_cnt; i++) {
-			if (dev_map_can_have_prog(new->aux->used_maps[i]))
-				return -EINVAL;
-			if (cpu_map_prog_allowed(new->aux->used_maps[i]))
-				return -EINVAL;
-		}
-	}
 
 	switch (xdp->command) {
 	case XDP_SETUP_PROG:

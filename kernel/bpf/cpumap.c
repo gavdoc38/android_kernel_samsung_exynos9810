@@ -21,6 +21,7 @@
 #include <linux/ptr_ring.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <trace/events/xdp.h>
 
 #include <linux/sched.h>
 #include <linux/workqueue.h>
@@ -139,6 +140,23 @@ free_cmap:
 	return ERR_PTR(err);
 }
 
+#define CPUMAP_SKB_TAG 1UL
+
+static bool cpu_map_is_skb(const void *ptr)
+{
+	return (unsigned long)ptr & CPUMAP_SKB_TAG;
+}
+
+static void *cpu_map_tag_skb(struct sk_buff *skb)
+{
+	return (void *)((unsigned long)skb | CPUMAP_SKB_TAG);
+}
+
+static struct sk_buff *cpu_map_untag_skb(const void *ptr)
+{
+	return (struct sk_buff *)((unsigned long)ptr & ~CPUMAP_SKB_TAG);
+}
+
 void __cpu_map_queue_destructor(void *ptr)
 {
 	/* The tear-down procedure should have made sure that queue is
@@ -146,7 +164,12 @@ void __cpu_map_queue_destructor(void *ptr)
 	 * invoked cpu_map_kthread_stop(). Catch any broken behaviour
 	 * gracefully and warn once.
 	 */
-	if (WARN_ON_ONCE(ptr))
+	if (!WARN_ON_ONCE(ptr))
+		return;
+
+	if (cpu_map_is_skb(ptr))
+		kfree_skb(cpu_map_untag_skb(ptr));
+	else
 		__free_page_frag(ptr);
 }
 
@@ -197,7 +220,7 @@ static struct xdp_pkt *convert_to_xdp_pkt(struct xdp_buff *xdp)
 }
 
 static bool cpu_map_bpf_prog_run_xdp(struct bpf_cpu_map_entry *rcpu,
-				      struct xdp_pkt *xdp_pkt)
+				     struct xdp_pkt *xdp_pkt)
 {
 	struct xdp_rxq_info rxq = {
 		.dev = xdp_pkt->dev_rx,
@@ -245,6 +268,46 @@ static bool cpu_map_bpf_prog_run_xdp(struct bpf_cpu_map_entry *rcpu,
 	case XDP_ABORTED:
 	case XDP_DROP:
 		__free_page_frag(xdp_pkt);
+		break;
+	}
+	rcu_read_unlock_bh();
+
+	return pass;
+}
+
+static bool cpu_map_bpf_prog_run_skb(struct bpf_cpu_map_entry *rcpu,
+				     struct sk_buff *skb)
+{
+	struct xdp_buff xdp = {};
+	bool pass = false;
+	u32 act;
+	int err;
+
+	if (!rcpu->prog)
+		return true;
+
+	rcu_read_lock_bh();
+	act = bpf_prog_run_generic_xdp(skb, &xdp, rcpu->prog);
+	switch (act) {
+	case XDP_PASS:
+		pass = true;
+		break;
+	case XDP_REDIRECT:
+		err = xdp_do_generic_redirect(skb->dev, skb, &xdp,
+					      rcpu->prog);
+		if (unlikely(err))
+			kfree_skb(skb);
+		else
+			xdp_do_flush_map();
+		break;
+	default:
+		bpf_warn_invalid_xdp_action(act);
+		/* fall through */
+	case XDP_ABORTED:
+		trace_xdp_exception(skb->dev, rcpu->prog, act);
+		/* fall through */
+	case XDP_DROP:
+		kfree_skb(skb);
 		break;
 	}
 	rcu_read_unlock_bh();
@@ -305,7 +368,7 @@ static int cpu_map_kthread_run(void *data)
 	 */
 	while (!kthread_should_stop() || !__ptr_ring_empty(rcpu->queue)) {
 		unsigned int processed = 0;
-		struct xdp_pkt *xdp_pkt;
+		void *ptr;
 
 		if (__ptr_ring_empty(rcpu->queue)) {
 			set_current_state(TASK_INTERRUPTIBLE);
@@ -319,9 +382,22 @@ static int cpu_map_kthread_run(void *data)
 		}
 
 		local_bh_disable();
-		while ((xdp_pkt = __ptr_ring_consume(rcpu->queue))) {
+		while ((ptr = __ptr_ring_consume(rcpu->queue))) {
+			struct xdp_pkt *xdp_pkt;
 			struct sk_buff *skb;
 
+			if (cpu_map_is_skb(ptr)) {
+				skb = cpu_map_untag_skb(ptr);
+				if (!cpu_map_bpf_prog_run_skb(rcpu, skb))
+					continue;
+
+				netif_receive_skb(skb);
+				if (++processed == CPU_MAP_BULK_SIZE)
+					break;
+				continue;
+			}
+
+			xdp_pkt = ptr;
 			if (!cpu_map_bpf_prog_run_xdp(rcpu, xdp_pkt))
 				continue;
 
@@ -331,7 +407,8 @@ static int cpu_map_kthread_run(void *data)
 				continue;
 			}
 
-			netif_receive_skb_core(skb);
+			skb_set_redirected(skb, false);
+			netif_receive_skb(skb);
 			if (++processed == CPU_MAP_BULK_SIZE)
 				break;
 		}
@@ -341,12 +418,6 @@ static int cpu_map_kthread_run(void *data)
 
 	put_cpu_map_entry(rcpu);
 	return 0;
-}
-
-bool cpu_map_prog_allowed(struct bpf_map *map)
-{
-	return map->map_type == BPF_MAP_TYPE_CPUMAP &&
-	       map->value_size != offsetofend(struct bpf_cpumap_val, qsize);
 }
 
 static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu, int fd)
@@ -702,6 +773,21 @@ int cpu_map_enqueue(struct bpf_cpu_map_entry *rcpu, struct xdp_buff *xdp,
 
 	xdp_pkt->dev_rx = dev_rx;
 	return bq_enqueue(rcpu, xdp_pkt);
+}
+
+int cpu_map_generic_redirect(struct bpf_cpu_map_entry *rcpu,
+			     struct sk_buff *skb)
+{
+	int err;
+
+	__skb_pull(skb, skb->mac_len);
+	skb_set_redirected(skb, false);
+
+	err = ptr_ring_produce(rcpu->queue, cpu_map_tag_skb(skb));
+	if (!err)
+		wake_up_process(rcpu->kthread);
+
+	return err;
 }
 
 void __cpu_map_insert_ctx(struct bpf_map *map, u32 bit)

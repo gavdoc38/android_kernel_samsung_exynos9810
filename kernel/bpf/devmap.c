@@ -512,13 +512,6 @@ static int dev_map_hash_delete_elem(struct bpf_map *map, void *key)
 	return ret;
 }
 
-bool dev_map_can_have_prog(struct bpf_map *map)
-{
-	return (map->map_type == BPF_MAP_TYPE_DEVMAP ||
-		map->map_type == BPF_MAP_TYPE_DEVMAP_HASH) &&
-	       map->value_size != offsetofend(struct bpf_devmap_val, ifindex);
-}
-
 static struct bpf_dtab_netdev *__dev_map_alloc_node(struct net *net,
 						    struct bpf_dtab *dtab,
 						    struct bpf_devmap_val *val,
@@ -858,7 +851,10 @@ static int dev_map_generic_redirect_one(struct bpf_dtab_netdev *dst,
 					struct sk_buff *skb,
 					struct bpf_prog *xdp_prog)
 {
+	struct xdp_txq_info txq = { .dev = dst->dev };
+	struct xdp_buff xdp = { .txq = &txq };
 	unsigned int len;
+	u32 act;
 
 	if (unlikely(!(dst->dev->flags & IFF_UP)))
 		return -ENETDOWN;
@@ -867,9 +863,50 @@ static int dev_map_generic_redirect_one(struct bpf_dtab_netdev *dst,
 	if (skb->len > len)
 		return -EMSGSIZE;
 
+	if (dst->xdp_prog) {
+		__skb_pull(skb, skb->mac_len);
+		act = bpf_prog_run_generic_xdp(skb, &xdp, dst->xdp_prog);
+		switch (act) {
+		case XDP_PASS:
+			__skb_push(skb, skb->mac_len);
+			break;
+		default:
+			bpf_warn_invalid_xdp_action(act);
+			/* fall through */
+		case XDP_ABORTED:
+			trace_xdp_exception(dst->dev, dst->xdp_prog, act);
+			/* fall through */
+		case XDP_DROP:
+			kfree_skb(skb);
+			return 0;
+		}
+	}
+
 	skb->dev = dst->dev;
 	generic_xdp_tx(skb, xdp_prog);
 	return 0;
+}
+
+int dev_map_generic_redirect(struct bpf_map *map, u32 key,
+			     struct sk_buff *skb,
+			     struct bpf_prog *xdp_prog)
+{
+	struct bpf_dtab_netdev *dst;
+
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP) {
+		struct bpf_dtab *dtab = container_of(map, struct bpf_dtab, map);
+
+		if (key >= map->max_entries)
+			return -ENOENT;
+		dst = READ_ONCE(dtab->netdev_map[key]);
+	} else {
+		dst = __dev_map_hash_lookup_elem_dtab(map, key);
+	}
+
+	if (!dst)
+		return -ENOENT;
+
+	return dev_map_generic_redirect_one(dst, skb, xdp_prog);
 }
 
 static int dev_map_redirect_clone(struct bpf_dtab_netdev *dst,

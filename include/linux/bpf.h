@@ -1467,16 +1467,19 @@ int dev_map_enqueue(struct bpf_map *map, u32 key, struct xdp_buff *xdp,
 		    struct net_device *dev_rx);
 int dev_map_enqueue_multi(struct xdp_buff *xdp, struct net_device *dev_rx,
 			  struct bpf_map *map, bool exclude_ingress);
+int dev_map_generic_redirect(struct bpf_map *map, u32 key,
+			     struct sk_buff *skb,
+			     struct bpf_prog *xdp_prog);
 int dev_map_redirect_multi(struct net_device *dev, struct sk_buff *skb,
 			   struct bpf_prog *xdp_prog, struct bpf_map *map,
 			   bool exclude_ingress);
-bool dev_map_can_have_prog(struct bpf_map *map);
 struct bpf_cpu_map_entry *__cpu_map_lookup_elem(struct bpf_map *map, u32 key);
 void __cpu_map_insert_ctx(struct bpf_map *map, u32 index);
 void __cpu_map_flush(struct bpf_map *map);
 int cpu_map_enqueue(struct bpf_cpu_map_entry *rcpu, struct xdp_buff *xdp,
 		    struct net_device *dev_rx);
-bool cpu_map_prog_allowed(struct bpf_map *map);
+int cpu_map_generic_redirect(struct bpf_cpu_map_entry *rcpu,
+			     struct sk_buff *skb);
 
 static inline bool unprivileged_ebpf_enabled(void)
 {
@@ -1622,6 +1625,13 @@ static inline int dev_map_enqueue_multi(struct xdp_buff *xdp,
 	return -EOPNOTSUPP;
 }
 
+static inline int dev_map_generic_redirect(struct bpf_map *map, u32 key,
+					   struct sk_buff *skb,
+					   struct bpf_prog *xdp_prog)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int dev_map_redirect_multi(struct net_device *dev,
 					 struct sk_buff *skb,
 					 struct bpf_prog *xdp_prog,
@@ -1630,12 +1640,6 @@ static inline int dev_map_redirect_multi(struct net_device *dev,
 {
 	return -EOPNOTSUPP;
 }
-
-static inline bool dev_map_can_have_prog(struct bpf_map *map)
-{
-	return false;
-}
-
 static inline
 struct bpf_cpu_map_entry *__cpu_map_lookup_elem(struct bpf_map *map, u32 key)
 {
@@ -1658,9 +1662,10 @@ static inline int cpu_map_enqueue(struct bpf_cpu_map_entry *rcpu,
 	return 0;
 }
 
-static inline bool cpu_map_prog_allowed(struct bpf_map *map)
+static inline int cpu_map_generic_redirect(struct bpf_cpu_map_entry *rcpu,
+					   struct sk_buff *skb)
 {
-	return false;
+	return -EOPNOTSUPP;
 }
 
 static inline bool unprivileged_ebpf_enabled(void)

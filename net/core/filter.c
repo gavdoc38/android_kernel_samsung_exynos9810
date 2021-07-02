@@ -1856,6 +1856,7 @@ static const struct bpf_func_proto bpf_csum_level_proto = {
 
 static inline int __bpf_rx_skb(struct net_device *dev, struct sk_buff *skb)
 {
+	skb_set_redirected(skb, true);
 	return dev_forward_skb_nomtu(dev, skb);
 }
 
@@ -1866,6 +1867,7 @@ static inline int __bpf_rx_skb_no_mac(struct net_device *dev,
 
 	if (likely(!ret)) {
 		skb->dev = dev;
+		skb_set_redirected(skb, true);
 		ret = netif_rx(skb);
 	}
 
@@ -3939,13 +3941,8 @@ static int xdp_do_generic_redirect_map(struct net_device *dev,
 						     flags &
 						     BPF_F_EXCLUDE_INGRESS);
 		} else {
-			struct net_device *fwd_dev = fwd;
-
-			err = __xdp_generic_ok_fwd_dev(skb, fwd_dev);
-			if (unlikely(err))
-				goto err;
-			skb->dev = fwd_dev;
-			generic_xdp_tx(skb, xdp_prog);
+			err = dev_map_generic_redirect(map, index, skb,
+						       xdp_prog);
 		}
 		if (unlikely(err))
 			goto err;
@@ -3954,8 +3951,11 @@ static int xdp_do_generic_redirect_map(struct net_device *dev,
 		if (unlikely(err))
 			goto err;
 		consume_skb(skb);
+	} else if (map->map_type == BPF_MAP_TYPE_CPUMAP) {
+		err = cpu_map_generic_redirect(fwd, skb);
+		if (unlikely(err))
+			goto err;
 	} else {
-		/* Generic-XDP CPUMAP redirect is added separately. */
 		err = -EBADRQC;
 		goto err;
 	}
