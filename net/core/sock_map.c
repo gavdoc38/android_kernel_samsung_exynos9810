@@ -476,7 +476,7 @@ static bool sock_map_sk_state_allowed(const struct sock *sk)
 	if (sk_is_tcp(sk))
 		return (1 << sk->sk_state) &
 		       (TCPF_ESTABLISHED | TCPF_LISTEN);
-	return sk->sk_state == TCP_ESTABLISHED;
+	return true;
 }
 
 static bool sock_map_sk_is_suitable(const struct sock *sk)
