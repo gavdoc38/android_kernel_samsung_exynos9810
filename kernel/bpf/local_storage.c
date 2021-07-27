@@ -1,6 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 #include <linux/bpf-cgroup.h>
 #include <linux/bpf.h>
+#include <linux/bpf_local_storage.h>
 #include <linux/btf.h>
 #include <linux/bug.h>
 #include <linux/cgroup.h>
@@ -281,8 +282,14 @@ enoent:
 
 static struct bpf_map *cgroup_storage_map_alloc(union bpf_attr *attr)
 {
+	__u32 max_value_size = BPF_LOCAL_STORAGE_MAX_VALUE_SIZE;
 	int numa_node = bpf_map_attr_numa_node(attr);
 	struct bpf_cgroup_storage_map *map;
+
+	/* Per-CPU storage is bounded by the per-CPU allocator's unit size. */
+	if (attr->map_type == BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE)
+		max_value_size = min_t(__u32, max_value_size,
+				       PCPU_MIN_UNIT_SIZE);
 
 	if (attr->key_size != sizeof(struct bpf_cgroup_storage_key) &&
 	    attr->key_size != sizeof(__u64))
@@ -291,7 +298,7 @@ static struct bpf_map *cgroup_storage_map_alloc(union bpf_attr *attr)
 	if (!attr->value_size)
 		return ERR_PTR(-EINVAL);
 
-	if (attr->value_size > PAGE_SIZE)
+	if (attr->value_size > max_value_size)
 		return ERR_PTR(-E2BIG);
 
 	if (attr->map_flags & ~LOCAL_STORAGE_CREATE_FLAG_MASK ||
