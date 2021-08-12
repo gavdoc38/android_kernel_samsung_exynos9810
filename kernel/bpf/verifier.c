@@ -8512,8 +8512,9 @@ static void sanitize_dead_code(struct bpf_verifier_env *env)
 
 	for (i = 0; i < insn_cnt; i++) {
 		if (aux_data[i].seen)
-			continue;
+		continue;
 		memcpy(insn + i, &nop, sizeof(nop));
+		aux_data[i].zext_dst = false;
 	}
 }
 
