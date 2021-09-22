@@ -561,6 +561,12 @@ static bool is_spilled_reg(const struct bpf_stack_state *stack)
 	return stack->slot_type[BPF_REG_SIZE - 1] == STACK_SPILL;
 }
 
+static void scrub_spilled_slot(u8 *stype)
+{
+	if (*stype != STACK_INVALID)
+		*stype = STACK_MISC;
+}
+
 static void print_verifier_state(struct bpf_verifier_env *env,
 				 const struct bpf_func_state *state)
 {
@@ -2503,9 +2509,18 @@ static bool register_is_null(struct bpf_reg_state *reg)
 	return reg->type == SCALAR_VALUE && tnum_equals_const(reg->var_off, 0);
 }
 
-static bool register_is_const(struct bpf_reg_state *reg)
+static bool __is_scalar_unbounded(struct bpf_reg_state *reg)
 {
-	return reg->type == SCALAR_VALUE && tnum_is_const(reg->var_off);
+	return tnum_is_unknown(reg->var_off) &&
+	       reg->smin_value == S64_MIN && reg->smax_value == S64_MAX &&
+	       reg->umin_value == 0 && reg->umax_value == U64_MAX &&
+	       reg->s32_min_value == S32_MIN && reg->s32_max_value == S32_MAX &&
+	       reg->u32_min_value == 0 && reg->u32_max_value == U32_MAX;
+}
+
+static bool register_is_bounded(struct bpf_reg_state *reg)
+{
+	return reg->type == SCALAR_VALUE && !__is_scalar_unbounded(reg);
 }
 
 /* Copy src state preserving dst->parent and dst->live fields */
@@ -2521,15 +2536,21 @@ static void copy_register_state(struct bpf_reg_state *dst,
 }
 
 static void save_register_state(struct bpf_func_state *state,
-				int spi, struct bpf_reg_state *reg)
+				int spi, struct bpf_reg_state *reg,
+				int size)
 {
 	int i;
 
 	copy_register_state(&state->stack[spi].spilled_ptr, reg);
-	state->stack[spi].spilled_ptr.live |= REG_LIVE_WRITTEN;
+	if (size == BPF_REG_SIZE)
+		state->stack[spi].spilled_ptr.live |= REG_LIVE_WRITTEN;
 
-	for (i = 0; i < BPF_REG_SIZE; i++)
-		state->stack[spi].slot_type[i] = STACK_SPILL;
+	for (i = BPF_REG_SIZE; i > BPF_REG_SIZE - size; i--)
+		state->stack[spi].slot_type[i - 1] = STACK_SPILL;
+
+	/* size < 8 bytes spill */
+	for (; i; i--)
+		scrub_spilled_slot(&state->stack[spi].slot_type[i - 1]);
 }
 
 /* check_stack_{read,write}_fixed_off functions track spill/fill of registers,
@@ -2580,7 +2601,7 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 				true;
 	}
 
-	if (reg && size == BPF_REG_SIZE && register_is_const(reg) &&
+	if (reg && !(off % BPF_REG_SIZE) && register_is_bounded(reg) &&
 	    !register_is_null(reg) && env->allow_ptr_leaks) {
 		if (dst_reg != BPF_REG_FP) {
 			/* The backtracking logic can only recognize explicit
@@ -2593,7 +2614,7 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 			if (err)
 				return err;
 		}
-		save_register_state(state, spi, reg);
+		save_register_state(state, spi, reg, size);
 	} else if (reg && is_spillable_regtype(reg->type)) {
 
 		/* register containing pointer is being spilled into stack */
@@ -2607,12 +2628,17 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 			return -EINVAL;
 		}
 
-		save_register_state(state, spi, reg);
+		save_register_state(state, spi, reg, size);
 	} else {
 		u8 type = STACK_MISC;
 
 		/* regular write of data into stack destroys any spilled ptr */
 		state->stack[spi].spilled_ptr.type = NOT_INIT;
+		/* Mark slots as STACK_MISC if they belonged to spilled ptr. */
+		if (is_spilled_reg(&state->stack[spi]))
+			for (i = 0; i < BPF_REG_SIZE; i++)
+				scrub_spilled_slot(
+					&state->stack[spi].slot_type[i]);
 
 		/* only mark the slot as written if all 8 bytes were written
 		 * otherwise read propagation may incorrectly stop too soon
@@ -2757,22 +2783,51 @@ static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
 	struct bpf_func_state *state = vstate->frame[vstate->curframe];
 	int i, slot = -off - 1, spi = slot / BPF_REG_SIZE;
 	struct bpf_reg_state *reg;
-	u8 *stype;
+	u8 *stype, type;
 
 	stype = reg_state->stack[spi].slot_type;
 	reg = &reg_state->stack[spi].spilled_ptr;
 
 	if (is_spilled_reg(&reg_state->stack[spi])) {
 		if (size != BPF_REG_SIZE) {
+			u8 scalar_size = 0;
+
 			if (reg->type != SCALAR_VALUE) {
 				verbose(env, "invalid size of register fill\n");
 				return -EACCES;
 			}
-			if (dst_regno >= 0) {
-				mark_reg_unknown(env, state->regs, dst_regno);
-				state->regs[dst_regno].live |= REG_LIVE_WRITTEN;
-			}
+
 			mark_reg_read(env, reg, reg->parent, REG_LIVE_READ64);
+			if (dst_regno < 0)
+				return 0;
+
+			for (i = BPF_REG_SIZE;
+			     i > 0 && stype[i - 1] == STACK_SPILL; i--)
+				scalar_size++;
+
+			if (!(off % BPF_REG_SIZE) && size == scalar_size) {
+				/* check_reg_arg() selected subreg_def already. */
+				s32 subreg_def =
+					state->regs[dst_regno].subreg_def;
+
+				copy_register_state(&state->regs[dst_regno], reg);
+				state->regs[dst_regno].subreg_def = subreg_def;
+			} else {
+				for (i = 0; i < size; i++) {
+					type = stype[(slot - i) % BPF_REG_SIZE];
+					if (type == STACK_SPILL ||
+					    type == STACK_MISC ||
+					    (type == STACK_INVALID &&
+					     env->allow_uninit_stack))
+						continue;
+					verbose(env,
+						"invalid read from stack off %d+%d size %d\n",
+						off, i, size);
+					return -EACCES;
+				}
+				mark_reg_unknown(env, state->regs, dst_regno);
+			}
+			state->regs[dst_regno].live |= REG_LIVE_WRITTEN;
 			return 0;
 		}
 		for (i = 1; i < BPF_REG_SIZE; i++) {
@@ -2804,11 +2859,12 @@ static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
 		mark_reg_read(env, reg, reg->parent, REG_LIVE_READ64);
 	} else {
 		for (i = 0; i < size; i++) {
-			if (stype[(slot - i) % BPF_REG_SIZE] == STACK_MISC)
+			type = stype[(slot - i) % BPF_REG_SIZE];
+			if (type == STACK_MISC)
 				continue;
-			if (stype[(slot - i) % BPF_REG_SIZE] == STACK_ZERO)
+			if (type == STACK_ZERO)
 				continue;
-			if (stype[(slot - i) % BPF_REG_SIZE] == STACK_INVALID &&
+			if (type == STACK_INVALID &&
 			    env->allow_uninit_stack)
 				continue;
 			verbose(env, "invalid read from stack off %d+%d size %d\n",
@@ -4317,8 +4373,8 @@ static int check_stack_range_initialized(
 				spilled = &state->stack[spi].spilled_ptr;
 				__mark_reg_unknown(env, spilled);
 				for (j = 0; j < BPF_REG_SIZE; j++)
-					state->stack[spi].slot_type[j] =
-						STACK_MISC;
+					scrub_spilled_slot(
+						&state->stack[spi].slot_type[j]);
 			}
 			goto mark;
 		}
