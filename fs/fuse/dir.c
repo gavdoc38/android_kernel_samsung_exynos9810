@@ -3090,18 +3090,71 @@ static int fuse_bpf_readdir_fill(struct dir_context *ctx, const char *name,
 	return 0;
 }
 
-static int fuse_bpf_readdir_lower(struct file *file,
-				  struct fuse_bpf_args *args,
-				  struct fuse_bpf_readdir_io *io)
+static int fuse_bpf_readdir_initialize(struct fuse_bpf_args *args,
+				       struct fuse_bpf_readdir_io *io,
+				       struct file *file,
+				       struct dir_context *ctx,
+				       bool *force_again,
+				       bool *allow_force,
+				       bool is_continued)
+{
+	struct fuse_file *ff = file->private_data;
+
+	if (!ff || !ff->backing_file)
+		return -EBADF;
+	if (ctx->pos < 0)
+		return -EINVAL;
+
+	memset(io, 0, sizeof(*io));
+	io->page = (char *)get_zeroed_page(GFP_KERNEL);
+	if (!io->page)
+		return -ENOMEM;
+
+	io->original_pos = ctx->pos;
+	io->in.fh = ff->fh;
+	io->in.offset = ctx->pos;
+	io->in.size = PAGE_SIZE;
+
+	*args = (struct fuse_bpf_args) {
+		.nodeid = ff->nodeid,
+		.opcode = FUSE_READDIR,
+		.in_numargs = 1,
+		.out_numargs = 2,
+		.flags = FUSE_BPF_OUT_ARGVAR,
+		.in_args[0] = (struct fuse_bpf_in_arg) {
+			.size = sizeof(io->in),
+			.value = &io->in,
+		},
+		.out_args[0] = (struct fuse_bpf_arg) {
+			.size = sizeof(io->out),
+			.value = &io->out,
+		},
+		.out_args[1] = (struct fuse_bpf_arg) {
+			.size = PAGE_SIZE,
+			.value = io->page,
+		},
+	};
+
+	*force_again = false;
+	*allow_force = true;
+	(void)is_continued;
+	return 0;
+}
+
+static int fuse_bpf_readdir_backing(struct fuse_bpf_args *args,
+				    struct file *file,
+				    struct dir_context *ctx,
+				    bool *force_again,
+				    bool *allow_force,
+				    bool is_continued)
 {
 	struct fuse_file *ff = file->private_data;
 	struct file *backing_file = ff ? ff->backing_file : NULL;
 	struct fuse_read_in *in;
 	struct fuse_read_out *out;
+	struct fuse_bpf_readdir_io *io;
 	struct fuse_bpf_readdir_ctx buffer = {
 		.ctx.actor = fuse_bpf_readdir_fill,
-		.ctx.pos = io->original_pos,
-		.page = io->page,
 	};
 	int ret;
 
@@ -3113,7 +3166,7 @@ static int fuse_bpf_readdir_lower(struct file *file,
 	    args->flags != FUSE_BPF_OUT_ARGVAR ||
 	    args->in_numargs != 1 || args->out_numargs != 2 ||
 	    !args->in_args[0].value || !args->out_args[0].value ||
-	    args->out_args[1].value != io->page ||
+	    !args->out_args[1].value ||
 	    args->in_args[0].size != sizeof(*in) ||
 	    args->out_args[0].size != sizeof(*out) ||
 	    args->out_args[1].size != PAGE_SIZE)
@@ -3121,13 +3174,24 @@ static int fuse_bpf_readdir_lower(struct file *file,
 
 	in = (struct fuse_read_in *)args->in_args[0].value;
 	out = args->out_args[0].value;
-	if (in != &io->in || out != &io->out || in->fh != ff->fh ||
-	    in->offset != (u64)io->original_pos || in->size != PAGE_SIZE ||
-	    in->read_flags || in->lock_owner || in->flags || in->padding ||
-	    out->offset != (u64)io->original_pos || out->again || out->padding)
+	io = container_of(in, struct fuse_bpf_readdir_io, in);
+	buffer.ctx.pos = ctx->pos;
+	buffer.page = io->page;
+	if (out != &io->out || args->out_args[1].value != io->page ||
+	    in->fh != ff->fh || in->offset != (u64)ctx->pos ||
+	    in->size != PAGE_SIZE || in->read_flags || in->lock_owner ||
+	    in->flags || in->padding || out->again || out->padding)
 		return -EOPNOTSUPP;
 
-	backing_file->f_pos = io->original_pos;
+	/*
+	 * file->f_pos is not updated until the outer getdents call returns.
+	 * During a forced continuation keep the already-advanced lower
+	 * directory stream instead of rewinding it to the original upper
+	 * file position.
+	 */
+	if (!is_continued)
+		backing_file->f_pos = file->f_pos;
+
 	io->executed = true;
 	ret = iterate_dir(backing_file, &buffer.ctx);
 	if (!ret && buffer.error)
@@ -3137,106 +3201,141 @@ static int fuse_bpf_readdir_lower(struct file *file,
 
 	io->lower_end = buffer.ctx.pos;
 	io->bytes = buffer.bytes;
-	io->out.offset = (u64)buffer.ctx.pos;
+	out->offset = (u64)buffer.ctx.pos;
+	out->again = 0;
+	out->padding = 0;
 	args->out_args[1].size = buffer.bytes;
 	args->out_args[1].end_offset = io->page + buffer.bytes;
+
+	if (!buffer.bytes)
+		*allow_force = false;
+	(void)force_again;
 	return ret;
+}
+
+static void *fuse_bpf_readdir_finalize(struct fuse_bpf_args *args,
+				       struct file *file,
+				       struct dir_context *ctx,
+				       bool *force_again,
+				       bool *allow_force,
+				       bool is_continued)
+{
+	struct fuse_file *ff = file->private_data;
+	struct fuse_read_in *in;
+	struct fuse_read_out *out;
+	struct fuse_bpf_readdir_io *io;
+	u32 expected_in;
+	int error = (s32)args->error_in;
+	int ret = 0;
+
+	/*
+	 * The first input remains the kernel-owned read request through the
+	 * prefilter, backing execution, postfilter, and daemon continuation.
+	 * Recover the I/O object first so the staging page is released on all
+	 * initialized error paths.
+	 */
+	if (!args->in_numargs || !args->in_args[0].value ||
+	    args->in_args[0].size != sizeof(*in))
+		return ERR_PTR(-EIO);
+
+	in = (struct fuse_read_in *)args->in_args[0].value;
+	io = container_of(in, struct fuse_bpf_readdir_io, in);
+
+	if (error) {
+		ret = error < 0 ? error : -EIO;
+		goto out;
+	}
+
+	if (args->opcode == FUSE_READDIR)
+		expected_in = 1;
+	else if (args->opcode == (FUSE_READDIR | FUSE_POSTFILTER))
+		expected_in = 3;
+	else {
+		ret = -EIO;
+		goto out;
+	}
+
+	if (!ff || !ff->backing_file ||
+	    args->nodeid != ff->nodeid ||
+	    args->flags != FUSE_BPF_OUT_ARGVAR ||
+	    args->in_numargs != expected_in ||
+	    args->out_numargs != 2 ||
+	    !args->out_args[0].value || !args->out_args[1].value ||
+	    args->out_args[0].size != sizeof(*out) ||
+	    args->out_args[1].size > PAGE_SIZE ||
+	    args->out_args[0].value != &io->out ||
+	    args->out_args[1].value != io->page) {
+		ret = -EIO;
+		goto out;
+	}
+
+	out = args->out_args[0].value;
+	if (expected_in == 3 &&
+	    (!args->in_args[1].value || !args->in_args[2].value ||
+	     args->in_args[1].value != &io->out ||
+	     args->in_args[1].size != sizeof(io->out) ||
+	     args->in_args[2].value != io->page ||
+	     args->in_args[2].size > PAGE_SIZE)) {
+		ret = -EIO;
+		goto out;
+	}
+	if (out->padding || out->offset > LLONG_MAX) {
+		ret = -EIO;
+		goto out;
+	}
+
+	ret = fuse_parse_dirfile_common(io->page, args->out_args[1].size,
+					file, ctx, true,
+					(loff_t)out->offset);
+	*force_again = !!out->again;
+	if (*force_again && !*allow_force)
+		ret = -EINVAL;
+
+	if (!ret)
+		ff->backing_file->f_pos = ctx->pos;
+	else
+		ff->backing_file->f_pos = io->original_pos;
+
+out:
+	if (io->executed)
+		fuse_invalidate_atime(file_inode(file));
+	free_page((unsigned long)io->page);
+	io->page = NULL;
+	(void)is_continued;
+	return ret ? ERR_PTR(ret) : NULL;
 }
 
 static int fuse_bpf_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
-	struct fuse_inode *fi = get_fuse_inode(inode);
-	struct fuse_conn *fc = get_fuse_conn(inode);
-	struct fuse_file *ff = file->private_data;
-	struct fuse_bpf_readdir_io io = { };
-	struct fuse_bpf_args args = { };
-	struct fuse_bpf_args backup = { };
-	struct bpf_prog *prog;
-	int actions;
-	int ret;
+	struct fuse_err_ret result;
+	bool allow_force = true;
+	bool force_again = false;
+	bool is_continued = false;
 
-	if (!ff || !ff->backing_file)
-		return -EBADF;
-	if (ctx->pos < 0)
-		return -EINVAL;
-
-	io.page = (char *)get_zeroed_page(GFP_KERNEL);
-	if (!io.page)
-		return -ENOMEM;
-	io.original_pos = ctx->pos;
-	io.out.offset = ctx->pos;
-	io.in.fh = ff->fh;
-	io.in.offset = ctx->pos;
-	io.in.size = PAGE_SIZE;
-
-	args.nodeid = ff->nodeid;
-	args.opcode = FUSE_READDIR;
-	args.in_numargs = 1;
-	args.out_numargs = 2;
-	args.flags = FUSE_BPF_OUT_ARGVAR;
-	args.in_args[0].size = sizeof(io.in);
-	args.in_args[0].value = &io.in;
-	args.out_args[0].size = sizeof(io.out);
-	args.out_args[0].value = &io.out;
-	args.out_args[1].size = PAGE_SIZE;
-	args.out_args[1].value = io.page;
-
-	prog = fuse_bpf_get_prog(fc, fi);
-	ret = fuse_bpf_prepare_prefilter(&args, &backup);
-	if (ret)
-		goto out;
-
-	actions = prog ? fuse_bpf_run_filter(prog, &args) :
-			 FUSE_BPF_BACKING;
-	if (actions < 0) {
-		ret = actions;
-		goto out;
-	}
-	/* Result rewriting and daemon continuation are added separately. */
-	if (actions != FUSE_BPF_BACKING) {
-		ret = -EOPNOTSUPP;
-		goto out;
+again:
+	result = fuse_bpf_backing(inode, struct fuse_bpf_readdir_io,
+				  fuse_bpf_readdir_initialize,
+				  fuse_bpf_readdir_backing,
+				  fuse_bpf_readdir_finalize,
+				  file, ctx, &force_again, &allow_force,
+				  is_continued);
+	if (force_again && !IS_ERR(result.result)) {
+		is_continued = true;
+		goto again;
 	}
 
-	ret = fuse_bpf_prepare_backing(&args, &backup);
-	if (ret)
-		goto out;
-	ret = fuse_bpf_readdir_lower(file, &args, &io);
-	if (ret)
-		goto out_rewind;
+	if (result.ret)
+		return PTR_ERR_OR_ZERO(result.result);
 
-	if (args.opcode != FUSE_READDIR || args.nodeid != ff->nodeid ||
-	    args.flags != FUSE_BPF_OUT_ARGVAR ||
-	    args.in_numargs != 1 || args.out_numargs != 2 ||
-	    args.out_args[0].value != &io.out ||
-	    args.out_args[0].size != sizeof(io.out) ||
-	    args.out_args[1].value != io.page ||
-	    args.out_args[1].size != io.bytes ||
-	    io.out.offset != (u64)io.lower_end || io.out.again ||
-	    io.out.padding) {
-		ret = -EIO;
-		goto out_rewind;
-	}
-
-	ret = fuse_parse_dirfile_common(io.page, io.bytes, file, ctx, true,
-					io.lower_end);
-	if (ret)
-		goto out_rewind;
-	ff->backing_file->f_pos = ctx->pos;
-	goto out;
-
-out_rewind:
-	ff->backing_file->f_pos = io.original_pos;
-out:
-	if (prog)
-		bpf_prog_put(prog);
-	free_page((unsigned long)io.page);
-	if (io.executed)
-		fuse_invalidate_atime(inode);
-	return ret;
+	/*
+	 * Never mix a live lower directory handle with the classic daemon
+	 * READDIR stream; their cookies and handle ownership are unrelated.
+	 */
+	return -EOPNOTSUPP;
 }
 #endif
+
 
 static int fuse_readdir(struct file *file, struct dir_context *ctx)
 {
