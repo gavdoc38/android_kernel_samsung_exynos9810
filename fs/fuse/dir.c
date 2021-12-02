@@ -126,7 +126,8 @@ static void fuse_invalidate_entry(struct dentry *entry)
 
 static void fuse_lookup_init(struct fuse_conn *fc, struct fuse_args *args,
 			     u64 nodeid, const struct qstr *name,
-			     struct fuse_entry_out *outarg)
+			     struct fuse_entry_out *outarg,
+			     struct fuse_entry_bpf_out *bpf_outarg)
 {
 	memset(outarg, 0, sizeof(struct fuse_entry_out));
 	args->in.h.opcode = FUSE_LOOKUP;
@@ -134,10 +135,97 @@ static void fuse_lookup_init(struct fuse_conn *fc, struct fuse_args *args,
 	args->in.numargs = 1;
 	args->in.args[0].size = name->len + 1;
 	args->in.args[0].value = name->name;
+#ifdef CONFIG_FUSE_BPF
+	args->out.argvar = 1;
+	args->out.numargs = 2;
+#else
 	args->out.numargs = 1;
+	(void)bpf_outarg;
+#endif
 	args->out.args[0].size = sizeof(struct fuse_entry_out);
 	args->out.args[0].value = outarg;
+#ifdef CONFIG_FUSE_BPF
+	args->out.args[1].size = sizeof(*bpf_outarg);
+	args->out.args[1].value = bpf_outarg;
+#endif
 }
+
+#ifdef CONFIG_FUSE_BPF
+static void fuse_lookup_put_bpf_files(struct fuse_entry_bpf *entry)
+{
+	if (entry->backing_file && !IS_ERR(entry->backing_file))
+		fput(entry->backing_file);
+	entry->backing_file = NULL;
+
+	if (entry->bpf_file && !IS_ERR(entry->bpf_file))
+		fput(entry->bpf_file);
+	entry->bpf_file = NULL;
+}
+
+static int fuse_lookup_apply_bpf_reply(struct super_block *sb,
+				       struct dentry *entry,
+				       struct fuse_entry_out *outarg,
+				       struct fuse_entry_bpf *bpf_entry,
+				       struct inode **inode)
+{
+	struct fuse_dentry *entry_data;
+	struct inode *backing_inode = NULL;
+	struct inode *parent;
+	struct path backing_path = { };
+	int ret;
+
+	if (!entry)
+		return -ENOENT;
+
+	entry_data = get_fuse_dentry(entry);
+	parent = d_inode(entry->d_parent);
+	if (!entry_data || !parent)
+		return -EIO;
+
+	ret = fuse_handle_backing(bpf_entry, &backing_inode, &backing_path);
+	if (ret)
+		goto out;
+
+	/*
+	 * An extended ordinary LOOKUP reply is useful here only when it
+	 * actually selects a lower object. KEEP with no prior lower path,
+	 * REMOVE, or an incomplete replacement must not manufacture a
+	 * backing inode from an invalid identity.
+	 */
+	if (!backing_inode || !backing_path.dentry || !backing_path.mnt) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	*inode = fuse_iget_backing(sb, outarg->nodeid, backing_inode,
+				  backing_path.mnt);
+	if (!*inode) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/*
+	 * Resolve KEEP against the real parent and let the hardened helper
+	 * enforce immutable BPF state on an already cached backing inode.
+	 */
+	ret = fuse_handle_bpf_prog(bpf_entry, parent,
+				   &get_fuse_inode(*inode)->bpf);
+	if (ret) {
+		iput(*inode);
+		*inode = NULL;
+		goto out;
+	}
+
+	/* Transfer the owned lower path only after the inode is complete. */
+	fuse_replace_backing_path(entry_data, &backing_path);
+	ret = 0;
+out:
+	if (backing_inode)
+		iput(backing_inode);
+	fuse_put_backing_path(&backing_path);
+	return ret;
+}
+#endif
 
 u64 fuse_get_attr_version(struct fuse_conn *fc)
 {
@@ -189,6 +277,7 @@ static int fuse_dentry_revalidate(struct dentry *entry, unsigned int flags)
 	if (time_before64(fuse_dentry_time(entry), get_jiffies_64()) ||
 	    (flags & LOOKUP_REVAL)) {
 		struct fuse_entry_out outarg;
+		struct fuse_entry_bpf bpf_arg = { };
 		FUSE_ARGS(args);
 		struct fuse_forget_link *forget;
 		u64 attr_version;
@@ -222,9 +311,26 @@ static int fuse_dentry_revalidate(struct dentry *entry, unsigned int flags)
 		attr_version = fuse_get_attr_version(fc);
 
 		fuse_lookup_init(fc, &args, get_node_id(d_inode(parent)),
-				 &entry->d_name, &outarg);
+				 &entry->d_name, &outarg, &bpf_arg.out);
 		ret = fuse_simple_request(fc, &args);
 		dput(parent);
+#ifdef CONFIG_FUSE_BPF
+		/*
+		 * A currently classic inode cannot be converted in place to a
+		 * backing-aware inode. Balance the daemon lookup and force a
+		 * fresh lookup, which can install the lower identity safely.
+		 */
+		if (ret > 0) {
+			if (outarg.nodeid) {
+				fuse_queue_forget(fc, forget, outarg.nodeid, 1);
+				forget = NULL;
+			}
+			fuse_lookup_put_bpf_files(&bpf_arg);
+			kfree(forget);
+			goto invalid;
+		}
+		fuse_lookup_put_bpf_files(&bpf_arg);
+#endif
 		/* Zero nodeid is same as -ENOENT */
 		if (!ret && !outarg.nodeid)
 			ret = -ENOENT;
@@ -372,19 +478,24 @@ bool fuse_invalid_attr(struct fuse_attr *attr)
 }
 
 int fuse_lookup_name(struct super_block *sb, u64 nodeid, const struct qstr *name,
-		     struct fuse_entry_out *outarg, struct inode **inode)
+		     struct fuse_entry_out *outarg, struct dentry *entry,
+		     struct inode **inode)
 {
 	struct fuse_conn *fc = get_fuse_conn_super(sb);
 	FUSE_ARGS(args);
+	struct fuse_entry_bpf bpf_arg = { };
 	struct fuse_forget_link *forget;
 	u64 attr_version;
 	int err;
+
+#ifndef CONFIG_FUSE_BPF
+	(void)entry;
+#endif
 
 	*inode = NULL;
 	err = -ENAMETOOLONG;
 	if (name->len > FUSE_NAME_MAX)
 		goto out;
-
 
 	forget = fuse_alloc_forget();
 	err = -ENOMEM;
@@ -393,15 +504,33 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, const struct qstr *name
 
 	attr_version = fuse_get_attr_version(fc);
 
-	fuse_lookup_init(fc, &args, nodeid, name, outarg);
+	fuse_lookup_init(fc, &args, nodeid, name, outarg, &bpf_arg.out);
 	err = fuse_simple_request(fc, &args);
+
+#ifdef CONFIG_FUSE_BPF
+	if (err == sizeof(bpf_arg.out)) {
+		err = fuse_lookup_apply_bpf_reply(sb, entry, outarg, &bpf_arg,
+						 inode);
+		if (err)
+			goto out_put_forget;
+		goto lookup_done;
+	}
+
+	/*
+	 * out.argvar reports the size of the final argument. Only zero
+	 * (classic reply) and the complete extended object are valid.
+	 */
+	if (err > 0) {
+		err = -EIO;
+		goto out_put_forget;
+	}
+#endif
+
 	/* Zero nodeid is same as -ENOENT, but with valid timeout */
 	if (err || !outarg->nodeid)
 		goto out_put_forget;
 
 	err = -EIO;
-	if (!outarg->nodeid)
-		goto out_put_forget;
 	if (fuse_invalid_attr(&outarg->attr))
 		goto out_put_forget;
 
@@ -411,13 +540,18 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, const struct qstr *name
 	err = -ENOMEM;
 	if (!*inode) {
 		fuse_queue_forget(fc, forget, outarg->nodeid, 1);
+		forget = NULL;
 		goto out;
 	}
-	err = 0;
 
- out_put_forget:
+lookup_done:
+	err = 0;
+out_put_forget:
 	kfree(forget);
- out:
+out:
+#ifdef CONFIG_FUSE_BPF
+	fuse_lookup_put_bpf_files(&bpf_arg);
+#endif
 	return err;
 }
 
@@ -462,7 +596,7 @@ static struct dentry *fuse_lookup(struct inode *dir, struct dentry *entry,
 
 	locked = fuse_lock_inode(dir);
 	err = fuse_lookup_name(dir->i_sb, get_node_id(dir), &entry->d_name,
-			       &outarg, &inode);
+			       &outarg, entry, &inode);
 	fuse_unlock_inode(dir, locked);
 	if (err == -ENOENT) {
 		outarg_valid = false;
