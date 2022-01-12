@@ -2,6 +2,7 @@
 OUTPUT ?= $(CURDIR)/
 HOSTCC ?= cc
 HOSTCFLAGS ?= -O2 -g
+HOSTLDFLAGS ?=
 
 BINARY := $(OUTPUT)resolve_btfids
 
@@ -9,7 +10,8 @@ all: $(BINARY)
 
 $(BINARY): main.c
 	@mkdir -p $(OUTPUT)
-	$(HOSTCC) $(HOSTCFLAGS) -std=gnu99 -Wall -Wextra -o $@ $<
+	$(HOSTCC) $(HOSTCFLAGS) -std=gnu99 -Wall -Wextra -o $@ $< \
+		$(HOSTLDFLAGS)
 
 clean:
 	$(RM) $(BINARY)

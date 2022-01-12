@@ -1245,7 +1245,8 @@ prepare-resolve_btfids: $(resolve_btfids_target)
 $(RESOLVE_BTFIDS): FORCE
 	$(Q)$(MAKE) -C $(srctree)/tools/bpf/resolve_btfids \
 		OUTPUT=$(dir $(RESOLVE_BTFIDS)) \
-		HOSTCC="$(HOSTCC)" HOSTCFLAGS="$(HOSTCFLAGS)"
+		HOSTCC="$(HOSTCC)" HOSTCFLAGS="$(HOSTCFLAGS)" \
+		HOSTLDFLAGS="$(HOSTLDFLAGS)"
 
 # Check for CONFIG flags that require compiler support. Abort the build
 # after .config has been processed, but before the kernel build starts.
