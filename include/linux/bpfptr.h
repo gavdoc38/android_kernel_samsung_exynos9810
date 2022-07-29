@@ -56,8 +56,7 @@ static inline int copy_from_bpfptr_offset(void *dst, bpfptr_t src,
 {
 	if (!bpfptr_is_kernel(src))
 		return copy_from_user(dst, src.user + offset, size);
-	memcpy(dst, src.kernel + offset, size);
-	return 0;
+	return probe_kernel_read(dst, src.kernel + offset, size);
 }
 
 static inline int copy_from_bpfptr(void *dst, bpfptr_t src, size_t size)
@@ -91,10 +90,7 @@ static inline long strncpy_from_bpfptr(char *dst, bpfptr_t src,
 				       size_t count)
 {
 	if (bpfptr_is_kernel(src)) {
-		size_t len = min(strnlen(src.kernel, count - 1) + 1, count);
-
-		memcpy(dst, src.kernel, len);
-		return len;
+		return strncpy_from_unsafe(dst, src.kernel, count);
 	}
 	return strncpy_from_user(dst, src.user, count);
 }
