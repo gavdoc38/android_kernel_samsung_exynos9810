@@ -373,6 +373,26 @@ static void show_vma_header_prefix(struct seq_file *m,
 	seq_putc(m, ' ');
 }
 
+static void show_vma_header_prefix_alt(struct seq_file *m,
+				   unsigned long start, unsigned long end,
+				   vm_flags_t flags, unsigned long long pgoff,
+				   dev_t dev, unsigned long ino)
+{
+	seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
+	seq_put_hex_ll(m, NULL, start, 8);
+	seq_put_hex_ll(m, "-", end, 8);
+	seq_putc(m, ' ');
+	seq_putc(m, flags & VM_READ ? 'r' : '-');
+	seq_putc(m, flags & VM_WRITE ? 'w' : '-');
+	seq_putc(m, flags & VM_EXEC ? '-' : '-');
+	seq_putc(m, flags & VM_MAYSHARE ? 's' : 'p');
+	seq_put_hex_ll(m, " ", pgoff, 8);
+	seq_put_hex_ll(m, " ", MAJOR(dev), 2);
+	seq_put_hex_ll(m, ":", MINOR(dev), 2);
+	seq_put_decimal_ull(m, " ", ino);
+	seq_putc(m, ' ');
+}
+
 static void
 show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 {
@@ -388,6 +408,7 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 
 	if (file) {
 		struct inode *inode = file_inode(vma->vm_file);
+		struct dentry *dentry = file->f_path.dentry;
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		if (unlikely(inode->i_state & BIT_SUS_MAPS) && susfs_is_current_proc_umounted()) {
 			seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
@@ -418,13 +439,22 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 bypass_orig_flow:
 #endif
 		pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+        	if (dentry) {
+        		const char *path = (const char *)dentry->d_name.name;
+            		if (strstr(path, "jit-cache") || strstr(path, "jit-zygote-cache")) { 
+	  			start = vma->vm_start;
+				end = vma->vm_end;
+				show_vma_header_prefix_alt(m, start, end, flags, pgoff, dev, ino);
+				goto bypass;
+            	 	}
+            	}
 	}
 
 	/* We don't show the stack guard page in /proc/maps */
 	start = vma->vm_start;
 	end = vma->vm_end;
 	show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
-
+bypass:
 	/*
 	 * Print the dentry name for named mappings, and a
 	 * special [heap] marker for the heap:
