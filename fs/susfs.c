@@ -1421,11 +1421,11 @@ static int susfs_sdcard_monitor_fn(void *data)
 		return -ENOMEM;
 	}
 
-	setup_selinux("u:r:su:s0", cred);
+	setup_selinux("u:r:ksu:s0", cred);
 	commit_creds(cred);
 
 	if (!susfs_is_current_ksu_domain()) {
-		SUSFS_LOGE("domain is not su, exiting the thread\n");
+		SUSFS_LOGE("domain is not ksu, exiting the thread\n");
 		return -EINVAL;
 	}
 
