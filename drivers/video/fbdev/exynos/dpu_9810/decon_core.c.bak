@@ -3101,7 +3101,7 @@ static int decon_ioctl(struct fb_info *info, unsigned int cmd,
 				break;
 			}
 		} else {
-			decon_dbg("DECON:DBG:%s:decon%d ignore unsupported pwr_state %d\n",
+			decon_warn("DECON:WARN:%s:decon%d invalid pwr_state %d\n",
 					__func__, decon->id, pwr_mode);
 		}
 		break;
