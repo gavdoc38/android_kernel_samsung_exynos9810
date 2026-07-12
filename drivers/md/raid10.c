@@ -859,11 +859,6 @@ static void flush_pending_writes(struct r10conf *conf)
 
 		while (bio) { /* submit pending writes */
 			struct bio *next = bio->bi_next;
-<<<<<<< HEAD
-			bio->bi_next = NULL;
-			if (unlikely((bio_op(bio) ==  REQ_OP_DISCARD) &&
-			    !blk_queue_discard(bdev_get_queue(bio->bi_bdev))))
-=======
 			struct md_rdev *rdev = (void*)bio->bi_disk;
 			bio->bi_next = NULL;
 			bio_set_dev(bio, rdev->bdev);
@@ -871,7 +866,6 @@ static void flush_pending_writes(struct r10conf *conf)
 				bio_io_error(bio);
 			} else if (unlikely((bio_op(bio) ==  REQ_OP_DISCARD) &&
 					    !blk_queue_discard(bio->bi_disk->queue)))
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 				/* Just ignore it */
 				bio_endio(bio);
 			else
@@ -1048,11 +1042,6 @@ static void raid10_unplug(struct blk_plug_cb *cb, bool from_schedule)
 
 	while (bio) { /* submit pending writes */
 		struct bio *next = bio->bi_next;
-<<<<<<< HEAD
-		bio->bi_next = NULL;
-		if (unlikely((bio_op(bio) ==  REQ_OP_DISCARD) &&
-		    !blk_queue_discard(bdev_get_queue(bio->bi_bdev))))
-=======
 		struct md_rdev *rdev = (void*)bio->bi_disk;
 		bio->bi_next = NULL;
 		bio_set_dev(bio, rdev->bdev);
@@ -1060,7 +1049,6 @@ static void raid10_unplug(struct blk_plug_cb *cb, bool from_schedule)
 			bio_io_error(bio);
 		} else if (unlikely((bio_op(bio) ==  REQ_OP_DISCARD) &&
 				    !blk_queue_discard(bio->bi_disk->queue)))
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 			/* Just ignore it */
 			bio_endio(bio);
 		else
@@ -1077,9 +1065,6 @@ static void __make_request(struct mddev *mddev, struct bio *bio)
 	struct bio *read_bio;
 	int i;
 	const int op = bio_op(bio);
-<<<<<<< HEAD
-	const int rw = bio_data_dir(bio);
-=======
 	const unsigned long do_sync = (bio->bi_opf & REQ_SYNC);
 	int max_sectors;
 	sector_t sectors;
@@ -1194,16 +1179,12 @@ static void raid10_write_one_disk(struct mddev *mddev, struct r10bio *r10_bio,
 				  int n_copy)
 {
 	const int op = bio_op(bio);
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 	const unsigned long do_sync = (bio->bi_opf & REQ_SYNC);
 	const unsigned long do_fua = (bio->bi_opf & REQ_FUA);
 	unsigned long flags;
 	struct md_rdev *blocked_rdev;
 	struct blk_plug_cb *cb;
 	struct raid10_plug_cb *plug = NULL;
-<<<<<<< HEAD
-	int sectors_handled;
-=======
 	struct r10conf *conf = mddev->private;
 	struct md_rdev *rdev;
 	int devnum = r10_bio->devs[n_copy].devnum;
@@ -1269,7 +1250,6 @@ static void raid10_write_request(struct mddev *mddev, struct bio *bio,
 	int i;
 	struct md_rdev *blocked_rdev;
 	sector_t sectors;
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 	int max_sectors;
 	int sectors;
 
@@ -2741,13 +2721,7 @@ static void handle_read_error(struct mddev *mddev, struct r10bio *r10_bio)
 	struct bio *bio;
 	struct r10conf *conf = mddev->private;
 	struct md_rdev *rdev = r10_bio->devs[slot].rdev;
-<<<<<<< HEAD
-	char b[BDEVNAME_SIZE];
-	unsigned long do_sync;
-	int max_sectors;
-=======
 	sector_t bio_last_sector;
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 
 	/* we got a read error. Maybe the drive is bad.  Maybe just
 	 * the block and we can fix it.
@@ -2758,11 +2732,7 @@ static void handle_read_error(struct mddev *mddev, struct r10bio *r10_bio)
 	 * frozen.
 	 */
 	bio = r10_bio->devs[slot].bio;
-<<<<<<< HEAD
-	bdevname(bio->bi_bdev, b);
-=======
 	bio_last_sector = r10_bio->devs[slot].addr + rdev->data_offset + r10_bio->sectors;
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 	bio_put(bio);
 	r10_bio->devs[slot].bio = NULL;
 
@@ -4660,12 +4630,7 @@ read_more:
 		if (!rdev2 || test_bit(Faulty, &rdev2->flags))
 			continue;
 
-<<<<<<< HEAD
-		bio_reset(b);
-		b->bi_bdev = rdev2->bdev;
-=======
 		bio_set_dev(b, rdev2->bdev);
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 		b->bi_iter.bi_sector = r10_bio->devs[s/2].addr +
 			rdev2->new_data_offset;
 		b->bi_private = r10_bio;

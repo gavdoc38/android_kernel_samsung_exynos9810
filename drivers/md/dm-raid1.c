@@ -145,10 +145,7 @@ static void dispatch_bios(void *context, struct bio_list *bio_list)
 
 struct dm_raid1_bio_record {
 	struct mirror *m;
-<<<<<<< HEAD
-=======
 	/* if details->bi_disk == NULL, details were not saved */
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 	struct dm_bio_details details;
 	region_t write_region;
 };
@@ -1202,11 +1199,8 @@ static int mirror_map(struct dm_target *ti, struct bio *bio)
 	struct dm_raid1_bio_record *bio_record =
 	  dm_per_bio_data(bio, sizeof(struct dm_raid1_bio_record));
 
-<<<<<<< HEAD
-=======
 	bio_record->details.bi_disk = NULL;
 
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 	if (rw == WRITE) {
 		/* Save region for mirror_end_io() handler */
 		bio_record->write_region = dm_rh_bio_to_region(ms->rh, bio);
@@ -1268,10 +1262,6 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 	if (error == BLK_STS_NOTSUPP)
 		return error;
 
-<<<<<<< HEAD
-	if ((error == -EWOULDBLOCK) && (bio->bi_opf & REQ_RAHEAD))
-		return error;
-=======
 	if (unlikely(*error)) {
 		if (!bio_record->details.bi_disk) {
 			/*
@@ -1282,7 +1272,6 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 			DMERR_LIMIT("Mirror read failed.");
 			return DM_ENDIO_DONE;
 		}
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 
 	if (unlikely(error)) {
 		m = bio_record->m;
@@ -1300,10 +1289,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 			bd = &bio_record->details;
 
 			dm_bio_restore(bd, bio);
-<<<<<<< HEAD
-=======
 			bio_record->details.bi_disk = NULL;
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 			bio->bi_status = 0;
 
 			queue_bio(ms, bio, rw);
@@ -1312,14 +1298,10 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 		DMERR("All replicated volumes dead, failing I/O");
 	}
 
-<<<<<<< HEAD
-	return error;
-=======
 out:
 	bio_record->details.bi_disk = NULL;
 
 	return DM_ENDIO_DONE;
->>>>>>> 74d46992e0d9 (block: replace bi_bdev with a gendisk pointer and partitions index)
 }
 
 static void mirror_presuspend(struct dm_target *ti)
