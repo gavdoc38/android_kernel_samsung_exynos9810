@@ -136,6 +136,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_SOCK_OPS,
 	BPF_PROG_TYPE_SK_SKB,
 	BPF_PROG_TYPE_CGROUP_DEVICE,
+	BPF_PROG_TYPE_SK_REUSEPORT = 21,
 	BPF_PROG_TYPE_TRACING = 26,
 };
 
@@ -890,6 +891,22 @@ struct xdp_md {
 enum sk_action {
 	SK_DROP = 0,
 	SK_PASS,
+};
+
+#define __bpf_md_ptr(type, name)\
+union {				\
+	type name;			\
+	__u64 :64;			\
+} __attribute__((aligned(8)))
+
+struct sk_reuseport_md {
+	__bpf_md_ptr(void *, data);
+	__bpf_md_ptr(void *, data_end);
+	__u32 len;
+	__u32 eth_protocol;
+	__u32 ip_protocol;
+	__u32 bind_inany;
+	__u32 hash;
 };
 
 #define BPF_TAG_SIZE	8
