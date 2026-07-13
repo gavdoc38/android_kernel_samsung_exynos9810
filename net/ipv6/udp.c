@@ -240,6 +240,8 @@ struct sock *__udp6_lib_lookup(struct net *net,
 		result = udp6_lib_lookup2(net, saddr, sport,
 					  daddr, hnum, dif, sdif, exact_dif,
 					  hslot2, skb);
+		if (unlikely(IS_ERR(result)))
+			return NULL;
 		if (!result) {
 			unsigned int old_slot2 = slot2;
 			hash2 = udp6_portaddr_hash(net, &in6addr_any, hnum);
@@ -256,6 +258,8 @@ struct sock *__udp6_lib_lookup(struct net *net,
 						  daddr, hnum, dif, sdif,
 						  exact_dif, hslot2,
 						  skb);
+			if (unlikely(IS_ERR(result)))
+				return NULL;
 		}
 		return result;
 	}
@@ -272,6 +276,8 @@ begin:
 						    saddr, sport);
 				result = reuseport_select_sock(sk, hash, skb,
 							sizeof(struct udphdr));
+				if (unlikely(IS_ERR(result)))
+					return NULL;
 				if (result)
 					return result;
 				matches = 1;

@@ -150,6 +150,8 @@ struct sock *inet6_lookup_listener(struct net *net,
 						      saddr, sport);
 				result = reuseport_select_sock(sk, phash,
 							       skb, doff);
+				if (unlikely(IS_ERR(result)))
+					return NULL;
 				if (result)
 					return result;
 				matches = 1;
