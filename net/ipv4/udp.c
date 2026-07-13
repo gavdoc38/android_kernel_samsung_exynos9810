@@ -530,6 +530,8 @@ struct sock *__udp4_lib_lookup(struct net *net, __be32 saddr,
 		result = udp4_lib_lookup2(net, saddr, sport,
 					  daddr, hnum, dif, sdif,
 					  exact_dif, hslot2, skb);
+		if (unlikely(IS_ERR(result)))
+			return NULL;
 		if (!result) {
 			unsigned int old_slot2 = slot2;
 			hash2 = udp4_portaddr_hash(net, htonl(INADDR_ANY), hnum);
@@ -545,6 +547,8 @@ struct sock *__udp4_lib_lookup(struct net *net, __be32 saddr,
 			result = udp4_lib_lookup2(net, saddr, sport,
 						  daddr, hnum, dif, sdif,
 						  exact_dif, hslot2, skb);
+			if (unlikely(IS_ERR(result)))
+				return NULL;
 		}
 		return result;
 	}
@@ -561,6 +565,8 @@ begin:
 						   saddr, sport);
 				result = reuseport_select_sock(sk, hash, skb,
 							sizeof(struct udphdr));
+				if (unlikely(IS_ERR(result)))
+					return NULL;
 				if (result)
 					return result;
 				matches = 1;
