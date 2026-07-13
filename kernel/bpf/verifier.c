@@ -3737,6 +3737,9 @@ static int check_map_func_compatibility(struct bpf_verifier_env *env,
 		    func_id != BPF_FUNC_map_push_elem)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_REUSEPORT_SOCKARRAY:
+		/* Enabled for BPF only together with sk_select_reuseport. */
+		goto error;
 	default:
 		break;
 	}

@@ -54,6 +54,28 @@ static int bpf_array_alloc_percpu(struct bpf_array *array)
 }
 
 /* Called from syscall */
+int array_map_alloc_check(union bpf_attr *attr)
+{
+	bool percpu = attr->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
+	int numa_node = bpf_map_attr_numa_node(attr);
+
+	/* check sanity of attributes */
+	if (attr->max_entries == 0 || attr->key_size != 4 ||
+	    attr->value_size == 0 ||
+	    attr->map_flags & ~ARRAY_CREATE_FLAG_MASK ||
+	    !bpf_map_flags_access_ok(attr->map_flags) ||
+	    (percpu && numa_node != NUMA_NO_NODE))
+		return -EINVAL;
+
+	if (attr->value_size > KMALLOC_MAX_SIZE)
+		/* if value_size is bigger, the user space won't be able to
+		 * access the elements.
+		 */
+		return -E2BIG;
+
+	return 0;
+}
+
 static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 {
 	bool percpu = attr->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
@@ -63,19 +85,9 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	u64 cost, array_size, mask64;
 	struct bpf_array *array;
 
-	/* check sanity of attributes */
-	if (attr->max_entries == 0 || attr->key_size != 4 ||
-	    attr->value_size == 0 ||
-	    attr->map_flags & ~ARRAY_CREATE_FLAG_MASK ||
-	    !bpf_map_flags_access_ok(attr->map_flags) ||
-	    (percpu && numa_node != NUMA_NO_NODE))
-		return ERR_PTR(-EINVAL);
-
-	if (attr->value_size > KMALLOC_MAX_SIZE)
-		/* if value_size is bigger, the user space won't be able to
-		 * access the elements.
-		 */
-		return ERR_PTR(-E2BIG);
+	ret = array_map_alloc_check(attr);
+	if (ret)
+		return ERR_PTR(ret);
 
 	elem_size = round_up(attr->value_size, 8);
 
