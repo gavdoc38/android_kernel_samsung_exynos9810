@@ -576,7 +576,7 @@ static int exynos_cpufreq_pm_qos_callback(struct notifier_block *nb,
 	struct exynos_cpufreq_domain *domain;
 	struct cpufreq_policy *policy;
 	struct cpumask mask;
-	int ret;
+	int ret, notify = NOTIFY_OK;
 
 	pr_debug("update PM QoS class %d to %ld kHz\n", pm_qos_class, val);
 
@@ -597,14 +597,13 @@ static int exynos_cpufreq_pm_qos_callback(struct notifier_block *nb,
 
 	ret = need_update_freq(domain, pm_qos_class, val);
 	if (ret < 0)
-		return NOTIFY_BAD;
-	if (!ret)
-		return NOTIFY_OK;
+		notify = NOTIFY_BAD;
+	else if (ret && update_freq(domain, val))
+		notify = NOTIFY_BAD;
 
-	if (update_freq(domain, val))
-		return NOTIFY_BAD;
+	cpufreq_cpu_put(policy);
 
-	return NOTIFY_OK;
+	return notify;
 }
 
 /*********************************************************************
