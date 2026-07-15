@@ -10407,9 +10407,9 @@
 
 	hotplug_governor {
 		compatible = "exynos, hotplug_governor";
-		single_change_ms = <30>;
-		dual_change_ms = <30>;
-		quad_change_ms = <15>;
+		single_change_ms = <100>;
+		dual_change_ms = <100>;
+		quad_change_ms = <100>;
 		big_heavy_thr = <640>;
 		lit_heavy_thr = <200>;
 		big_idle_thr = <113>;
