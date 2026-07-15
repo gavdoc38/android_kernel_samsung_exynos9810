@@ -805,16 +805,24 @@ static int exynos_hpgov_set_enabled(int val)
 
 static int exynos_hpgov_set_user_mode(int val)
 {
-	if (val == DISABLE)
-		exynos_hpgov.user_mode = DISABLE;
-	else if (val == QUAD)
-		exynos_hpgov.user_mode = QUAD;
-	else if (val == DUAL)
-		exynos_hpgov.user_mode = DUAL;
-	else if (val == SINGLE)
-		exynos_hpgov.user_mode = SINGLE;
-	else
-		pr_info("%s: input invalied value \n", __func__);
+	unsigned long flags;
+
+	if (val != DISABLE && val != SINGLE &&
+	    val != DUAL && val != QUAD)
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&hpgov_load_lock, flags);
+	exynos_hpgov.user_mode = val;
+
+	if (exynos_hpgov.enabled && !exynos_hpgov.suspend) {
+		if (val != DISABLE && val != exynos_hpgov.mode)
+			exynos_hpgov_request_mode_change(val);
+		else if (val == DISABLE &&
+			 !exynos_hpgov_update_sysload_info())
+			exynos_hpgov_update_mode();
+	}
+
+	raw_spin_unlock_irqrestore(&hpgov_load_lock, flags);
 
 	return 0;
 }
