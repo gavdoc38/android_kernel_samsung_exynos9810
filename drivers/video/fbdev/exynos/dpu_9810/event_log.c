@@ -846,23 +846,16 @@ static int decon_systrace_open(struct inode *inode, struct file *file)
 static ssize_t decon_systrace_write(struct file *file, const char __user *buf,
 		size_t count, loff_t *f_ops)
 {
-	char *buf_data;
+	unsigned int enabled;
 	int ret;
 
-	buf_data = kmalloc(count, GFP_KERNEL);
-	if (buf_data == NULL)
-		return count;
+	ret = kstrtouint_from_user(buf, count, 0, &enabled);
+	if (ret)
+		return ret;
+	if (enabled > 1)
+		return -EINVAL;
 
-	ret = copy_from_user(buf_data, buf, count);
-	if (ret < 0)
-		goto out;
-
-	ret = sscanf(buf_data, "%u", &decon_systrace_enable);
-	if (ret < 0)
-		goto out;
-
-out:
-	kfree(buf_data);
+	decon_systrace_enable = enabled;
 	return count;
 }
 

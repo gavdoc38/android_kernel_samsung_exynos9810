@@ -1343,7 +1343,6 @@ void reclaim_contig_migrate_range(unsigned long start,
 	struct compact_control cc = {
 		.mode = MIGRATE_SYNC_LIGHT,
 	};
-	unsigned long total_reclaimed = 0;
 
 	cc.nr_freepages = 0;
 	cc.nr_migratepages = 0;
@@ -1371,13 +1370,10 @@ void reclaim_contig_migrate_range(unsigned long start,
 		nr_reclaimed = reclaim_clean_pages_from_list(cc.zone,
 							&cc.migratepages);
 		cc.nr_migratepages -= nr_reclaimed;
-		total_reclaimed += nr_reclaimed;
-
 		/* Skip pages not reclaimed in the above */
 		if (cc.nr_migratepages)
 			putback_movable_pages(&cc.migratepages);
 	}
-	trace_printk("%lu\n", total_reclaimed << PAGE_SHIFT);
 }
 
 /*
@@ -2230,7 +2226,6 @@ static ssize_t mem_boost_mode_store(struct kobject *kobj,
 		return -EINVAL;
 
 	mem_boost_mode = mode;
-	trace_printk("memboost start\n");
 	last_mode_change = jiffies;
 	if (mem_boost_mode == BOOST_HIGH) {
 #ifdef CONFIG_ION_RBIN_HEAP

@@ -41,6 +41,9 @@
 #include <linux/sec_debug.h>
 #endif
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/exynos_dpu.h>
+
 #include "decon.h"
 #include "dsim.h"
 #include "dsu.h"
@@ -86,29 +89,20 @@ void __iomem *regs_dphy_clk_2;
 
 void tracing_mark_write(struct decon_device *decon, char id, char *str1, int value)
 {
-	char buf[DECON_TRACE_BUF_SIZE] = {0,};
-
 	if (!decon->systrace.pid)
 		return;
 
 	switch (id) {
 	case 'B': /* B : Begin */
-		snprintf(buf, DECON_TRACE_BUF_SIZE, "B|%d|%s",
-				decon->systrace.pid, str1);
-		break;
 	case 'E': /* E : End */
-		strcpy(buf, "E");
-		break;
 	case 'C': /* C : Category */
-		snprintf(buf, DECON_TRACE_BUF_SIZE,
-				"C|%d|%s|%d", decon->systrace.pid, str1, value);
 		break;
 	default:
 		decon_err("%s:argument fail\n", __func__);
 		return;
 	}
-	trace_puts(buf);
 
+	trace_decon_systrace(decon->systrace.pid, id, str1, value);
 }
 
 static void decon_dump_using_dpp(struct decon_device *decon)
@@ -4245,7 +4239,7 @@ static int decon_probe(struct platform_device *pdev)
 	decon_create_timeline(decon, device_name);
 
 	/* systrace */
-	decon_systrace_enable = 1;
+	decon_systrace_enable = 0;
 	decon->systrace.pid = 0;
 
 	ret = decon_init_resources(decon, pdev, device_name);
