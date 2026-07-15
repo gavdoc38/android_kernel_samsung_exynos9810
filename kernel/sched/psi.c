@@ -900,7 +900,7 @@ void psi_cgroup_free(struct cgroup *cgroup)
  */
 void cgroup_move_task(struct task_struct *task, struct css_set *to)
 {
-	unsigned int task_flags = 0;
+	unsigned int task_flags;
 	struct rq_flags rf;
 	struct rq *rq;
 
@@ -915,13 +915,8 @@ void cgroup_move_task(struct task_struct *task, struct css_set *to)
 
 	rq = task_rq_lock(task, &rf);
 
-	if (task_on_rq_queued(task))
-		task_flags = TSK_RUNNING;
-	else if (task->in_iowait)
-		task_flags = TSK_IOWAIT;
-
-	if (task->flags & PF_MEMSTALL)
-		task_flags |= TSK_MEMSTALL;
+	/* Move the state PSI actually accounts instead of reconstructing it. */
+	task_flags = task->psi_flags;
 
 	if (task_flags)
 		psi_task_change(task, task_flags, 0);
