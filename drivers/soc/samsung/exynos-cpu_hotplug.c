@@ -713,6 +713,9 @@ static void __init cpu_hotplug_pm_qos_init(void)
 		PM_QOS_CPU_ONLINE_MIN, PM_QOS_CPU_ONLINE_MIN_DEFAULT_VALUE);
 	pm_qos_add_request(&user_max_cpu_hotplug_request,
 		PM_QOS_CPU_ONLINE_MAX, PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE);
+
+	cpu_hotplug.user_min = PM_QOS_CPU_ONLINE_MIN_DEFAULT_VALUE;
+	cpu_hotplug.user_max = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
 }
 
 static void __init cpu_hotplug_sysfs_init(void)

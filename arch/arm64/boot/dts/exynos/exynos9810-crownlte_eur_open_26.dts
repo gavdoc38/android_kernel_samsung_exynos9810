@@ -10452,6 +10452,7 @@
 		ldsum_enabled = <0>;
 		skip_lit_enabled = <0>;
 		cl_busy_ratio = <65>;
+		single_freq = <2314000>;
 		dual_freq = <2314000>;
 		triple_freq = <1794000>;
 		quad_freq = <1794000>;
