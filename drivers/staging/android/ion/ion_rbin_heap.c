@@ -207,7 +207,6 @@ static int ion_rbin_heap_allocate(struct ion_heap *heap,
 	unsigned int pagesize;
 	unsigned long nr_total;
 	long nr_alloc;
-	unsigned long from_pool_size = 0;
 
 	/* actually does not support align like system heap or carveout heap */
 	if (align > PAGE_SIZE)
@@ -231,16 +230,13 @@ static int ion_rbin_heap_allocate(struct ion_heap *heap,
 		return -ENOMEM;
 	}
 
-	trace_printk("start. len %lu\n", size);
 	trace_ion_rbin_alloc_start(heap->name, buffer, size, NULL);
 
 	INIT_LIST_HEAD(&pages);
 	while (size_remaining > 0) {
 		page = alloc_rbin_page_from_pool(rbin_heap, buffer,
 						 size_remaining);
-		if (page)
-			from_pool_size += page_private(page);
-		else
+		if (!page)
 			page = alloc_rbin_page(rbin_heap, buffer,
 					       size_remaining);
 		if (!page)
@@ -270,8 +266,6 @@ static int ion_rbin_heap_allocate(struct ion_heap *heap,
 
 	buffer->priv_virt = table;
 	buffer->sg_table = table;
-	trace_printk("end success %9lu %9lu\n",
-		     from_pool_size, size - from_pool_size);
 	trace_ion_rbin_alloc_end(heap->name, buffer, size, NULL);
 	return 0;
 
@@ -282,7 +276,6 @@ free_pages:
 		free_rbin_page(rbin_heap, buffer, page);
 
 	atomic_sub(size >> PAGE_SHIFT, &rbin_allocated_pages);
-	trace_printk("end fail %ld %ld %lu\n", nr_total, nr_alloc, size);
 	trace_ion_rbin_alloc_end(heap->name, buffer, size, (void *)-1UL);
 	return -ENOMEM;
 }
@@ -368,7 +361,6 @@ static int ion_rbin_heap_prereclaim(void *data)
 {
 	struct ion_rbin_heap *heap = data;
 	struct page *page;
-	unsigned long totalsize;
 	unsigned long pagesize;
 	unsigned int max_pool_order = orders[0];
 	unsigned int order;
@@ -381,23 +373,19 @@ static int ion_rbin_heap_prereclaim(void *data)
 		wait_event_freezable(heap->waitqueue,
 				     heap->prereclaim_run);
 
-		trace_printk("start\n");
 		reclaim_contig_migrate_range(heap->base_pfn,
 				heap->base_pfn + heap->count, 0);
-		totalsize = 0;
 		while (true) {
 			page = alloc_rbin_page(heap, NULL,
 					       PAGE_SIZE << max_pool_order);
 			if (!page)
 				break;
 			pagesize = page_private(page);
-			totalsize += pagesize;
 			order = get_order(pagesize);
 			pool = heap->pools[order_to_index(order)];
 			ion_page_pool_free(pool, page);
 			atomic_add(1 << order, &rbin_pool_pages);
 		}
-		trace_printk("end %lu\n", totalsize);
 		heap->prereclaim_run = 0;
 	}
 
@@ -438,7 +426,6 @@ static int ion_rbin_heap_shrink_all(void *data)
 	struct ion_rbin_heap *heap = data;
 	struct ion_page_pool *pool;
 	int nr_scan, nr_freed;
-	unsigned long total_freed;
 	int i;
 
 	if (!heap || !heap->cma)
@@ -448,8 +435,6 @@ static int ion_rbin_heap_shrink_all(void *data)
 		wait_event_freezable(heap->waitqueue,
 				     heap->shrink_run);
 
-		trace_printk("start\n");
-		total_freed = 0;
 		for (i = 0; i < NUM_ORDERS; i++) {
 			pool = heap->pools[i];
 			nr_scan = ion_page_pool_shrink_cma(heap->cma, pool, 0);
@@ -457,11 +442,9 @@ static int ion_rbin_heap_shrink_all(void *data)
 				nr_freed = ion_page_pool_shrink_cma(heap->cma,
 								pool, nr_scan);
 				atomic_sub(nr_freed, &rbin_pool_pages);
-				total_freed += nr_freed;
 			}
 		}
 		heap->shrink_run = 0;
-		trace_printk("%lu\n", total_freed);
 	}
 
 	return 0;
@@ -573,4 +556,3 @@ void ion_rbin_heap_destroy(struct ion_heap *heap)
 							heap);
 	kfree(rbin_heap);
 }
-
