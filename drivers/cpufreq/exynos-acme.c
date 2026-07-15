@@ -324,6 +324,23 @@ static int exynos_cpufreq_verify(struct cpufreq_policy *policy)
 	return cpufreq_frequency_table_verify(policy, domain->freq_table);
 }
 
+static unsigned int exynos_cpufreq_resolve_freq(
+		struct cpufreq_policy *policy, unsigned int target_freq)
+{
+	struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
+	int index;
+
+	if (!domain)
+		return target_freq;
+
+	index = cpufreq_frequency_table_target(policy, target_freq,
+					       CPUFREQ_RELATION_L);
+	if (index < 0)
+		return target_freq;
+
+	return index_to_freq(domain->freq_table, index);
+}
+
 static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
 				  unsigned int target_freq,
 				  unsigned int relation)
@@ -503,6 +520,7 @@ static struct cpufreq_driver exynos_driver = {
 	.init		= exynos_cpufreq_driver_init,
 	.verify		= exynos_cpufreq_verify,
 	.target		= exynos_cpufreq_target,
+	.resolve_freq	= exynos_cpufreq_resolve_freq,
 	.get		= exynos_cpufreq_get,
 	.suspend	= exynos_cpufreq_suspend,
 	.resume		= exynos_cpufreq_resume,
