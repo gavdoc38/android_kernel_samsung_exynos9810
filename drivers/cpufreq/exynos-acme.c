@@ -237,7 +237,9 @@ static int scale(struct exynos_cpufreq_domain *domain,
 		goto fail_scale;
 
 	/* check cur target freq */
-	exynos_hpgov_validate_scale(policy->cpu, target_freq);
+	ret = exynos_hpgov_validate_scale(policy->cpu, target_freq);
+	if (ret)
+		goto fail_scale;
 
 	/* Scale frequency by hooked function, set_freq() */
 	ret = set_freq(domain, target_freq);

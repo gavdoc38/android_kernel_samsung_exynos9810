@@ -138,8 +138,13 @@ static inline int op_cpu_kill(unsigned int cpu)
  */
 static int boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
+	int ret;
+
 	if (cpu_ops[cpu]->cpu_boot) {
-		exynos_hpgov_validate_hpin(cpu);
+		ret = exynos_hpgov_validate_hpin(cpu);
+		if (ret)
+			return ret;
+
 		return cpu_ops[cpu]->cpu_boot(cpu);
 	}
 

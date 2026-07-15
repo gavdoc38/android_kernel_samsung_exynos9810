@@ -72,7 +72,6 @@ struct {
 	unsigned int			req_cpu_min;
 	unsigned int			mode;
 	unsigned int			user_mode;
-	unsigned int			boostable;
 
 	bool				big_busy;
 	int				skip_lit_enabled;
@@ -89,11 +88,9 @@ struct {
 	int				change_ms;
 	int				cl_busy_ratio;
 	
-	unsigned long			pol_max;
-	unsigned long			qos_max;
-
 	struct hpgov_attrib		attrib;
 	struct mutex			attrib_lock;
+	struct mutex			enable_lock;
 	struct task_struct		*task;
 	struct irq_work			update_irq_work;
 
@@ -124,48 +121,49 @@ enum {
 	QUAD = 4,
 };
 
-void exynos_hpgov_validate_scale(unsigned int cpu, unsigned int target_freq)
+int exynos_hpgov_validate_scale(unsigned int cpu, unsigned int target_freq)
 {
 	struct cpumask mask;
 	unsigned int max_freq;
 	int cur_mode;
 
 	if (cpumask_test_cpu(cpu, cpu_coregroup_mask(0)) || !exynos_hpgov.enabled)
-		return;
+		return 0;
 
 	cpumask_and(&mask, cpu_online_mask, cpu_coregroup_mask(4));
 	cur_mode = cpumask_weight(&mask);
 	max_freq = exynos_hpgov.maxfreq_table[cur_mode];
 
 	if (max_freq < target_freq) {
-		pr_info("%s: max_freq %u, target_freq %u, cur_mode %d\n",
-			__func__, max_freq, target_freq, cur_mode);
-		BUG_ON(true);
+		pr_warn_ratelimited("%s: reject target %u above max %u in mode %d\n",
+			__func__, target_freq, max_freq, cur_mode);
+		return -EBUSY;
 	}
 
-	return;
+	return 0;
 }
 
-void exynos_hpgov_validate_hpin(unsigned int cpu)
+int exynos_hpgov_validate_hpin(unsigned int cpu)
 {
 	struct cpumask mask;
 	unsigned int cur_freq, max_freq;
 	int next_mode;
 
 	if (cpumask_test_cpu(cpu, cpu_coregroup_mask(0)) || !exynos_hpgov.enabled)
-		return;
+		return 0;
 
 
 	cpumask_and(&mask, cpu_online_mask, cpu_coregroup_mask(4));
 	next_mode = cpumask_weight(&mask) + 1;
 	max_freq = exynos_hpgov.maxfreq_table[next_mode];
 	cur_freq = (unsigned int)cal_dfs_get_rate(exynos_hpgov.cal_id);
-	pr_info("%s: max_freq %d, cur_freq %d, next_mode %d \n",
-			__func__, max_freq, cur_freq, next_mode);
+	if (max_freq < cur_freq) {
+		pr_warn_ratelimited("%s: reject CPU%u online at %u above mode %d max %u\n",
+			__func__, cpu, cur_freq, next_mode, max_freq);
+		return -EBUSY;
+	}
 
-	BUG_ON(max_freq < cur_freq);
-
-	return;
+	return 0;
 }
 
 /**********************************************************************************/
@@ -187,30 +185,6 @@ static unsigned long get_hpgov_maxfreq(void)
 	return max_freq;
 }
 
-static void exynos_hpgov_set_boostable(void)
-{
-	unsigned long quad_freq = exynos_hpgov.maxfreq_table[QUAD];
-
-	if ((exynos_hpgov.qos_max <= quad_freq) ||
-		exynos_hpgov.pol_max < quad_freq)
-		exynos_hpgov.boostable = false;
-	else
-		exynos_hpgov.boostable = true;
-}
-
-static int exynos_hpgov_qos_callback(struct notifier_block *nb,
-					unsigned long val, void *v)
-{
-	exynos_hpgov.qos_max = val;
-	exynos_hpgov_set_boostable();
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block hpgov_pm_qos_max_notifier = {
-	.notifier_call = exynos_hpgov_qos_callback,
-};
-
 static int cpufreq_policy_notifier(struct notifier_block *nb,
 				    unsigned long event, void *data)
 {
@@ -228,10 +202,6 @@ static int cpufreq_policy_notifier(struct notifier_block *nb,
 			cpufreq_verify_within_limits(policy, 0, max_freq);
 		break;
 
-	case CPUFREQ_NOTIFY:
-		exynos_hpgov.pol_max = policy->max;
-		exynos_hpgov_set_boostable();
-		break;
 	}
 
 	return 0;
@@ -413,60 +383,74 @@ static int exynos_hpgov_do_update_governor(void *data)
 
 static void __exynos_hpgov_set_disable(void)
 {
+	exynos_hpgov.enabled = 0;
+	irq_work_sync(&exynos_hpgov.update_irq_work);
+	hrtimer_cancel(&exynos_hpgov.slack_timer);
+
 	if (exynos_hpgov.task)
 		kthread_stop(exynos_hpgov.task);
+	exynos_hpgov.task = NULL;
 
+	spin_lock(&hpgov_lock);
+	exynos_hpgov.data.event = 0;
+	exynos_hpgov.mode = QUAD;
+	exynos_hpgov.req_cpu_min = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
+	exynos_hpgov.cur_cpu_min = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
+	spin_unlock(&hpgov_lock);
+
+	exynos_hpgov_control_cpuidle(PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE);
 	pm_qos_update_request(&hpgov_min_pm_qos, PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE);
 
 	pr_info("HP_GOV: Stop hotplug governor\n");
 }
 
-static void __exynos_hpgov_set_enable(void)
+static int __exynos_hpgov_set_enable(void)
 {
+	int ret;
+
 	exynos_hpgov.mode = QUAD;
 	exynos_hpgov.user_mode = DISABLE;
 	exynos_hpgov.req_cpu_min = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
 	exynos_hpgov.cur_cpu_min = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
+	exynos_hpgov.data.event = 0;
 
 	/* create hp task */
 	exynos_hpgov.task = kthread_create(exynos_hpgov_do_update_governor,
 			&exynos_hpgov.data, "exynos_hpgov");
 	if (IS_ERR(exynos_hpgov.task)) {
-		spin_lock(&hpgov_lock);
-		exynos_hpgov.enabled--;
-		spin_unlock(&hpgov_lock);
-		pr_err("HP_GOV: Failed to start hotplug governor\n");
-		return;
+		ret = PTR_ERR(exynos_hpgov.task);
+		exynos_hpgov.task = NULL;
+		pr_err("HP_GOV: Failed to start hotplug governor (%d)\n", ret);
+		return ret;
 	}
 
 	set_user_nice(exynos_hpgov.task, MIN_NICE);
 	set_cpus_allowed_ptr(exynos_hpgov.task, cpu_coregroup_mask(0));
 
-	if (exynos_hpgov.task)
-		wake_up_process(exynos_hpgov.task);
+	exynos_hpgov.enabled = 1;
+	wake_up_process(exynos_hpgov.task);
 
 	pr_info("HP_GOV: Start hotplug governor\n");
+	return 0;
 }
 
 static int exynos_hpgov_set_enable(bool enable)
 {
-	int enable_cnt;
+	int ret = 0;
 
-	spin_lock(&hpgov_lock);
+	mutex_lock(&exynos_hpgov.enable_lock);
+
+	if (!!exynos_hpgov.enabled == enable)
+		goto out;
+
 	if (enable)
-		exynos_hpgov.enabled++;
+		ret = __exynos_hpgov_set_enable();
 	else
-		exynos_hpgov.enabled--;
-	enable_cnt = exynos_hpgov.enabled;
-	smp_wmb();
-	spin_unlock(&hpgov_lock);
-
-	if (enable_cnt == 1)
-		__exynos_hpgov_set_enable();
-	else if (enable_cnt == 0)
 		__exynos_hpgov_set_disable();
 
-	return 0;
+out:
+	mutex_unlock(&exynos_hpgov.enable_lock);
+	return ret;
 }
 
 /**********************************************************************************/
@@ -550,6 +534,11 @@ static int exynos_hpgov_update_sysload_info(void)
 
 	sg = sd->groups;
 	do {
+		if (num >= NUM_OF_GROUP) {
+			rcu_read_unlock();
+			return 1;
+		}
+
 		exynos_hpgov_update_avg_cl_load(sg, &exynos_hpgov.load_info[num]);
 		num++;
 	} while (sg = sg->next, sg != sd->groups);
@@ -728,9 +717,6 @@ static unsigned int exynos_hpgov_get_mode(unsigned int cur_mode)
 
 	if (exynos_hpgov.user_mode)
 		return exynos_hpgov.user_mode;
-
-	if (!exynos_hpgov.boostable)
-		return QUAD;
 
 	switch(cur_mode) {
 	case SINGLE:
@@ -953,6 +939,7 @@ static ssize_t exynos_hpgov_attr_##_name##_store(struct kobject *kobj, \
 	if (ret) { \
 		pr_err("Invalid input %s for %s %d\n", \
 				buf, __stringify(_name), ret);\
+		mutex_unlock(&exynos_hpgov.attrib_lock); \
 		return 0; \
 	} \
 	old_val = _param; \
@@ -1015,8 +1002,13 @@ static int exynos_hp_gov_pm_suspend_notifier(struct notifier_block *notifier,
 	if (online_cnt > cpumask_weight(cpu_coregroup_mask(0)))
 		while (cpumask_weight(cpu_online_mask) < online_cnt) {
 			msleep(3);
-			if (time_after(jiffies, timeout))
-				BUG_ON(1);
+			if (time_after(jiffies, timeout)) {
+				pr_err("HP_GOV: timed out restoring %d CPUs for suspend\n",
+					online_cnt);
+				pm_qos_update_request(&hpgov_suspend_pm_qos,
+					PM_QOS_CPU_ONLINE_MIN_DEFAULT_VALUE);
+				return notifier_from_errno(-EBUSY);
+			}
 		}
 
 	exynos_hpgov.suspend = true;
@@ -1090,7 +1082,9 @@ static int __init exynos_hpgov_parse_dt(void)
 	max_freq = (int)cal_dfs_get_max_freq(exynos_hpgov.cal_id);
 	if (!max_freq)
 		goto exit;
-	exynos_hpgov.maxfreq_table[SINGLE] = max_freq;
+	if (of_property_read_u32(np, "single_freq", &freq))
+		goto exit;
+	exynos_hpgov.maxfreq_table[SINGLE] = min(freq, max_freq);
 
 	if (of_property_read_u32(np, "dual_freq", &freq))
 		goto exit;
@@ -1118,12 +1112,6 @@ exit:
 }
 
 extern unsigned long sec_cpumask;
-static int __init exynos_hpgov_boostable(void)
-{
-	return (exynos_hpgov.maxfreq_table[SINGLE]
-			> exynos_hpgov.maxfreq_table[QUAD]);
-}
-
 extern struct cpumask early_cpu_mask;
 static int __init exynos_hpgov_init(void)
 {
@@ -1141,12 +1129,6 @@ static int __init exynos_hpgov_init(void)
 	if (exynos_hpgov_parse_dt())
 		goto failed;
 
-	/* start hp_governor after BOOT_ENAMBE_MS */
-	if (!exynos_hpgov_boostable()) {
-		pr_info("HP_GOV initialization is canceled by boost frequency\n");
-		goto failed;
-	}
-
 	/* init timer */
 	hrtimer_init(&exynos_hpgov.slack_timer, CLOCK_MONOTONIC,
 			HRTIMER_MODE_PINNED);
@@ -1154,6 +1136,7 @@ static int __init exynos_hpgov_init(void)
 
 	/* init mutex */
 	mutex_init(&exynos_hpgov.attrib_lock);
+	mutex_init(&exynos_hpgov.enable_lock);
 
 	/* init workqueue */
 	init_waitqueue_head(&exynos_hpgov.wait_q);
@@ -1190,12 +1173,9 @@ static int __init exynos_hpgov_init(void)
 	}
 
 	/* set default valuse */
-	exynos_hpgov.pol_max = ULONG_MAX;
-	exynos_hpgov.qos_max = ULONG_MAX;
 	exynos_hpgov.enabled = 0;
 	exynos_hpgov.mode = QUAD;
 	exynos_hpgov.user_mode = DISABLE;
-	exynos_hpgov.boostable = true;
 	exynos_hpgov.req_cpu_min = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
 	exynos_hpgov.cur_cpu_min = PM_QOS_CPU_ONLINE_MAX_DEFAULT_VALUE;
 
@@ -1225,10 +1205,6 @@ static int __init exynos_hpgov_init(void)
 	/* register pm notifier */
 	register_pm_notifier(&exynos_hp_gov_suspend_nb);
 	register_pm_notifier(&exynos_hp_gov_resume_nb);
-
-	/* register pm qos notifier */
-	pm_qos_add_notifier(PM_QOS_CLUSTER1_FREQ_MAX,
-				&hpgov_pm_qos_max_notifier);
 
 	schedule_delayed_work_on(0, &hpgov_boot_work,
 			msecs_to_jiffies(DEFAULT_BOOT_ENABLE_MS));

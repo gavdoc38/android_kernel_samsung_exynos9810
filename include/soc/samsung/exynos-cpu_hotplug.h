@@ -21,11 +21,18 @@ void exynos_cpu_hotplug_gov_activated(void);
 void exynos_hpgov_update_rq_load(int cpu);
 int exynos_hpgov_update_cpu_capacity(int cpu);
 #ifdef CONFIG_EXYNOS_HOTPLUG_GOVERNOR
-void exynos_hpgov_validate_hpin(unsigned int cpu);
-void exynos_hpgov_validate_scale(unsigned int cpu, unsigned int target_freq);
+int exynos_hpgov_validate_hpin(unsigned int cpu);
+int exynos_hpgov_validate_scale(unsigned int cpu, unsigned int target_freq);
 #else
-static inline void exynos_hpgov_validate_hpin(unsigned int cpu) {};
-static inline void exynos_hpgov_validate_scale(unsigned int cpu, unsigned int target_freq) {};
+static inline int exynos_hpgov_validate_hpin(unsigned int cpu)
+{
+	return 0;
+}
+static inline int exynos_hpgov_validate_scale(unsigned int cpu,
+					       unsigned int target_freq)
+{
+	return 0;
+}
 #endif
 
 #define UPDATE_ONLINE_CPU (1)
