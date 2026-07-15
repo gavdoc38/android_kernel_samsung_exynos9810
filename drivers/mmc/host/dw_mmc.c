@@ -4259,7 +4259,7 @@ int dw_mci_probe(struct dw_mci *host)
 	INIT_WORK(&host->card_work, dw_mci_work_routine_card);
 
 	/* INT min lock */
-	pm_workqueue = alloc_ordered_workqueue("kmmcd", 0);
+	pm_workqueue = alloc_ordered_workqueue("kmmcd", WQ_MEM_RECLAIM);
 	if (!pm_workqueue)
 		return -ENOMEM;
 
