@@ -1071,7 +1071,6 @@ static int dhdpcie_suspend_dev(struct pci_dev *dev)
 		DHD_ERROR(("%s: pci_set_power_state error %d\n",
 			__FUNCTION__, ret));
 	}
-	dev->state_saved = FALSE;
 	dhdpcie_suspend_dump_cfgregs(bus, "AFTER_EP_SUSPEND");
 	return ret;
 }
