@@ -1645,11 +1645,18 @@ static int abox_tickle_put(struct snd_kcontrol *kcontrol,
 	struct device *dev = cmpnt->dev;
 	struct abox_data *data = dev_get_drvdata(dev);
 	long val = ucontrol->value.integer.value[0];
+	long timeout;
 
 	dev_dbg(dev, "%s(%ld)\n", __func__, val);
 
 	if (!!val) {
 		pm_request_resume(dev);
+		timeout = wait_event_timeout(data->ipc_wait_queue,
+				data->calliope_state == CALLIOPE_ENABLED, HZ);
+		if (timeout)
+			flush_work(&data->boot_done_work);
+		else
+			dev_warn(dev, "Calliope boot timed out after tickle\n");
 		schedule_delayed_work(&data->tickle_work, 1 * HZ);
 	}
 
