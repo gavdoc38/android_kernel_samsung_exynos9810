@@ -1393,6 +1393,8 @@ int fuse_handle_backing(struct fuse_entry_bpf *entry,
 			struct path *backing_path);
 int fuse_handle_bpf_prog(struct fuse_entry_bpf *entry,
 			 struct inode *parent, struct bpf_prog **prog);
+int fuse_bpf_capture_entry_files(struct fuse_entry_bpf *entry);
+int fuse_bpf_capture_lookup_files(struct fuse_bpf_args *args);
 int fuse_revalidate_backing(struct dentry *entry, unsigned int flags);
 
 struct fuse_open_io {
@@ -1556,6 +1558,7 @@ void *fuse_release_finalize(struct fuse_bpf_args *args,
 	struct bpf_prog *__fuse_bpf_prog = NULL; \
 	io __fuse_bpf_io = { }; \
 	bool __fuse_bpf_initialized = false; \
+	bool __fuse_bpf_prefilter_user = false; \
 	bool __fuse_bpf_locked; \
 	int __fuse_bpf_ext_flags; \
 	int __fuse_bpf_ret; \
@@ -1640,6 +1643,7 @@ void *fuse_release_finalize(struct fuse_bpf_args *args,
 		} \
 		\
 		if (__fuse_bpf_ext_flags & FUSE_BPF_USER_FILTER) { \
+			__fuse_bpf_prefilter_user = true; \
 			if (!__fuse_bpf_args.nodeid) { \
 				__fuse_bpf_ret = -EOPNOTSUPP; \
 				__fuse_bpf_args.error_in = \
@@ -1709,6 +1713,17 @@ void *fuse_release_finalize(struct fuse_bpf_args *args,
 			__fuse_bpf_args.error_in = __fuse_bpf_ret; \
 			__fuse_bpf_fer.result = ERR_PTR(__fuse_bpf_ret); \
 			break; \
+		} \
+		if (__fuse_bpf_backup.opcode == FUSE_LOOKUP && \
+		    !__fuse_bpf_prefilter_user && \
+		    !(__fuse_bpf_ext_flags & FUSE_BPF_USER_FILTER)) { \
+			__fuse_bpf_ret = fuse_bpf_capture_lookup_files( \
+				&__fuse_bpf_args); \
+			if (__fuse_bpf_ret) { \
+				__fuse_bpf_args.error_in = __fuse_bpf_ret; \
+				__fuse_bpf_fer.result = ERR_PTR(__fuse_bpf_ret); \
+				break; \
+			} \
 		} \
 		if (!(__fuse_bpf_ext_flags & FUSE_BPF_USER_FILTER)) \
 			break; \
