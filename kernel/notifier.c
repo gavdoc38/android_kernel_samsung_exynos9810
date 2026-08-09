@@ -129,6 +129,30 @@ static int notifier_call_chain(struct notifier_block **nl,
 }
 NOKPROBE_SYMBOL(notifier_call_chain);
 
+/**
+ * notifier_call_chain_robust - notify a chain and roll back on error
+ * @nl: notifier chain head
+ * @val_up: value passed during the forward notification
+ * @val_down: value passed while rolling back a failed notification
+ * @v: data passed to each notifier
+ *
+ * The notifier chain must remain unchanged across both traversals.
+ *
+ * Return: the return value of the forward notification.
+ */
+static int notifier_call_chain_robust(struct notifier_block **nl,
+				      unsigned long val_up,
+				      unsigned long val_down, void *v)
+{
+	int ret, nr = 0;
+
+	ret = notifier_call_chain(nl, val_up, v, -1, &nr);
+	if (ret & NOTIFY_STOP_MASK)
+		notifier_call_chain(nl, val_down, v, nr - 1, NULL);
+
+	return ret;
+}
+
 /*
  *	Atomic notifier chain routines.  Registration and unregistration
  *	use a spinlock, and call_chain is synchronized by RCU (no locks).
@@ -307,6 +331,27 @@ int blocking_notifier_chain_unregister(struct blocking_notifier_head *nh,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(blocking_notifier_chain_unregister);
+
+int blocking_notifier_call_chain_robust(struct blocking_notifier_head *nh,
+					unsigned long val_up,
+					unsigned long val_down, void *v)
+{
+	int ret = NOTIFY_DONE;
+
+	/*
+	 * Recheck the chain after taking the lock. A racing registration
+	 * before the lock does not affect correctness.
+	 */
+	if (rcu_access_pointer(nh->head)) {
+		down_read(&nh->rwsem);
+		ret = notifier_call_chain_robust(&nh->head, val_up,
+						 val_down, v);
+		up_read(&nh->rwsem);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(blocking_notifier_call_chain_robust);
 
 /**
  *	__blocking_notifier_call_chain - Call functions in a blocking notifier chain
