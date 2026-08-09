@@ -74,7 +74,7 @@ static const struct bpf_verifier_ops * const bpf_verifier_ops[] = {
  * - unreachable insns exist (shouldn't be a forest. program = one function)
  * - out of bounds or malformed jumps
  * The second pass is all possible path descent from the 1st insn.
- * Since it's analyzing all pathes through the program, the length of the
+ * Since it's analyzing all paths through the program, the length of the
  * analysis is limited to 64k insn, which may be hit even if total number of
  * insn is less then 4K, but there are too many branches that change stack/regs.
  * Number of 'branches to be analyzed' is limited to 1k
@@ -159,7 +159,7 @@ static const struct bpf_verifier_ops * const bpf_verifier_ops[] = {
  * If it's ok, then verifier allows this BPF_CALL insn and looks at
  * .ret_type which is RET_PTR_TO_MAP_VALUE_OR_NULL, so it sets
  * R0->type = PTR_TO_MAP_VALUE_OR_NULL which means bpf_map_lookup_elem() function
- * returns ether pointer to map value or NULL.
+ * returns either pointer to map value or NULL.
  *
  * When type PTR_TO_MAP_VALUE_OR_NULL passes through 'if (reg != 0) goto +off'
  * insn, the register holding that pointer in the true branch changes state to
@@ -1698,7 +1698,7 @@ static int check_subprogs(struct bpf_verifier_env *env)
 			continue;
 		if (!env->allow_ptr_leaks) {
 			verbose(env,
-				"calls to other BPF or kernel functions are allowed for root only\n");
+				"loading/calling other bpf or kernel functions are allowed for root only\n");
 			return -EPERM;
 		}
 		if (bpf_prog_is_dev_bound(env->prog->aux)) {
@@ -2551,7 +2551,7 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 		if (dst_reg != BPF_REG_FP) {
 			/* The backtracking logic can only recognize explicit
 			 * stack slot address like [fp - 8]. Other spill of
-			 * scalar via different register has to be conervative.
+			 * scalar via different register has to be conservative.
 			 * Backtrack from here and mark all registers as precise
 			 * that contributed into 'reg' being a constant.
 			 */
@@ -3751,7 +3751,7 @@ static int check_ptr_to_map_access(struct bpf_verifier_env *env,
 
 	if (!env->allow_ptr_to_map_access) {
 		verbose(env,
-			"%s access requires CAP_PERFMON or CAP_SYS_ADMIN\n",
+			"%s access is allowed only to CAP_PERFMON and CAP_SYS_ADMIN\n",
 			tname);
 		return -EPERM;
 	}
@@ -4007,10 +4007,13 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			return -EACCES;
 		}
 		if (t == BPF_WRITE && !may_access_direct_pkt_data(env, NULL, t)) {
+			verbose(env, "cannot write into packet\n");
 			return -EACCES;
 		}
 		if (t == BPF_WRITE && value_regno >= 0 &&
 		    is_pointer_value(env, value_regno)) {
+			verbose(env, "R%d leaks addr into packet\n",
+				value_regno);
 			return -EACCES;
 		}
 		err = check_packet_access(env, regno, off, size, false);
@@ -4019,6 +4022,8 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	} else if (reg->type == PTR_TO_FLOW_KEYS) {
 		if (t == BPF_WRITE && value_regno >= 0 &&
 		    is_pointer_value(env, value_regno)) {
+			verbose(env, "R%d leaks addr into flow keys\n",
+				value_regno);
 			return -EACCES;
 		}
 
@@ -4060,6 +4065,8 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		if (!err && t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown(env, regs, value_regno);
 	} else {
+		verbose(env, "R%d invalid mem access '%s'\n", regno,
+			reg_type_str[reg->type]);
 		return -EACCES;
 	}
 
@@ -4074,6 +4081,7 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 static int check_atomic(struct bpf_verifier_env *env, int insn_idx,
 			struct bpf_insn *insn)
 {
+	struct bpf_reg_state *regs = cur_regs(env);
 	int load_reg;
 	int err;
 
@@ -4134,8 +4142,8 @@ static int check_atomic(struct bpf_verifier_env *env, int insn_idx,
 	    is_pkt_reg(env, insn->dst_reg)  ||
 	    is_sk_reg(env, insn->dst_reg)) {
 		verbose(env, "BPF_ATOMIC stores into R%d %s is not allowed\n",
-			insn->dst_reg, is_ctx_reg(env, insn->dst_reg) ?
-			"context" : "packet");
+			insn->dst_reg,
+			reg_type_str[regs[insn->dst_reg].type]);
 		return -EACCES;
 	}
 
@@ -5062,7 +5070,7 @@ skip_type_check:
 			err = mark_chain_precision(env, regno);
 	} else if (arg_type_is_alloc_size(arg_type)) {
 		if (!tnum_is_const(reg->var_off)) {
-			verbose(env, "R%d unbounded size, use 'var &= const' or 'if (var < const)'\n",
+			verbose(env, "R%d is not a known constant'\n",
 				regno);
 			return -EACCES;
 		}
@@ -7472,7 +7480,7 @@ static void scalar32_min_max_rsh(struct bpf_reg_state *dst_reg,
 	 * 3) the signed bounds cross zero, so they tell us nothing
 	 *    about the result
 	 * If the value in dst_reg is known nonnegative, then again the
-	 * unsigned bounts capture the signed bounds.
+	 * unsigned bounds capture the signed bounds.
 	 * Thus, in all cases it suffices to blow away our signed bounds
 	 * and rely on inferring new ones from the unsigned bounds and
 	 * var_off of the result.
@@ -7503,7 +7511,7 @@ static void scalar_min_max_rsh(struct bpf_reg_state *dst_reg,
 	 * 3) the signed bounds cross zero, so they tell us nothing
 	 *    about the result
 	 * If the value in dst_reg is known nonnegative, then again the
-	 * unsigned bounts capture the signed bounds.
+	 * unsigned bounds capture the signed bounds.
 	 * Thus, in all cases it suffices to blow away our signed bounds
 	 * and rely on inferring new ones from the unsigned bounds and
 	 * var_off of the result.
@@ -9791,7 +9799,7 @@ static void clean_verifier_state(struct bpf_verifier_env *env,
  * Since the verifier pushes the branch states as it sees them while exploring
  * the program the condition of walking the branch instruction for the second
  * time means that all states below this branch were already explored and
- * their final liveness markes are already propagated.
+ * their final liveness marks are already propagated.
  * Hence when the verifier completes the search of state list in is_state_visited()
  * we can call this clean_live_states() function to mark all liveness states
  * as REG_LIVE_DONE to indicate that 'parent' pointers of 'struct bpf_reg_state'
@@ -10658,8 +10666,10 @@ static int do_check(struct bpf_verifier_env *env)
 				return err;
 
 			if (is_ctx_reg(env, insn->dst_reg)) {
-				verbose(env, "BPF_ST stores into R%d context is not allowed\n",
-					insn->dst_reg);
+				verbose(env,
+					"BPF_ST stores into R%d %s is not allowed\n",
+					insn->dst_reg,
+					reg_type_str[regs[insn->dst_reg].type]);
 				return -EACCES;
 			}
 
@@ -10747,8 +10757,8 @@ static int do_check(struct bpf_verifier_env *env)
 					continue;
 				}
 
-				/* eBPF calling convetion is such that R0 is used
-				 * to return the value from eBPF program.
+				/* eBPF calling convention is such that R0 is
+				 * used to return the value from eBPF program.
 				 * Make sure that it's readable at this time
 				 * of bpf_exit, which means that program wrote
 				 * something into it earlier
@@ -12086,8 +12096,9 @@ static int fixup_bpf_calls(struct bpf_verifier_env *env)
 			env->prog->aux->stack_depth = MAX_BPF_STACK;
 
 			/* mark bpf_tail_call as different opcode to avoid
-			 * conditional branch in the interpeter for every normal
-			 * call and to prevent accidental JITing by JIT compiler
+			 * conditional branch in the interpreter for every
+			 * normal call and to prevent accidental JITing by JIT
+			 * compiler
 			 * that doesn't support bpf_tail_call yet
  			 */
 			insn->imm = 0;
