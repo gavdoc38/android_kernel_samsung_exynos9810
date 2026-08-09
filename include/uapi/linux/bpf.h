@@ -1985,7 +1985,7 @@ enum bpf_func_id {
 #define BPF_F_CURRENT_NETNS		(-1L)
 
 /* BPF_FUNC_<kernel_obj>_storage_get flags */
-#define BPF_LOCAL_STORAGE_GET_F_CREATE	(1ULL << 0)
+#define BPF_LOCAL_STORAGE_GET_F_CREATE	1ULL
 /* Kept for source compatibility with the original socket helper. */
 #define BPF_SK_STORAGE_GET_F_CREATE	BPF_LOCAL_STORAGE_GET_F_CREATE
 

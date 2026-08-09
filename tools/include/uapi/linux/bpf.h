@@ -194,15 +194,26 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_SK_MSG = 16,
 	BPF_PROG_TYPE_RAW_TRACEPOINT = 17,
 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
+	BPF_PROG_TYPE_LWT_SEG6LOCAL = 19,
+	BPF_PROG_TYPE_LIRC_MODE2 = 20,
 	BPF_PROG_TYPE_SK_REUSEPORT = 21,
 	BPF_PROG_TYPE_FLOW_DISSECTOR = 22,
 	BPF_PROG_TYPE_CGROUP_SYSCTL = 23,
 	BPF_PROG_TYPE_RAW_TRACEPOINT_WRITABLE = 24,
 	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
 	BPF_PROG_TYPE_TRACING = 26,
+	BPF_PROG_TYPE_STRUCT_OPS = 27,
 	BPF_PROG_TYPE_EXT = 28,
+	BPF_PROG_TYPE_LSM = 29,
 	BPF_PROG_TYPE_SK_LOOKUP = 30,
 	BPF_PROG_TYPE_SYSCALL = 31, /* a program that can execute syscalls */
+
+	/*
+	 * Android discovers this out-of-tree type through
+	 * /sys/fs/fuse/bpf_prog_type_fuse. Preserve value 32 while
+	 * using Linux 5.15's BPF_PROG_TYPE_SYSCALL slot 31 above.
+	 */
+	BPF_PROG_TYPE_FUSE = 32,
 };
 
 enum bpf_attach_type {
@@ -222,6 +233,7 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET6_POST_BIND,
 	BPF_CGROUP_UDP4_SENDMSG,
 	BPF_CGROUP_UDP6_SENDMSG,
+	BPF_LIRC_MODE2 = 16,
 	BPF_FLOW_DISSECTOR = 17,
 	BPF_CGROUP_SYSCTL = 18,
 	BPF_CGROUP_UDP4_RECVMSG = 19,
@@ -231,6 +243,8 @@ enum bpf_attach_type {
 	BPF_TRACE_RAW_TP = 23,
 	BPF_TRACE_FENTRY = 24,
 	BPF_TRACE_FEXIT = 25,
+	BPF_MODIFY_RETURN = 26,
+	BPF_LSM_MAC = 27,
 	BPF_TRACE_ITER = 28,
 	BPF_CGROUP_INET4_GETPEERNAME = 29,
 	BPF_CGROUP_INET6_GETPEERNAME = 30,
@@ -487,6 +501,10 @@ union bpf_attr {
 		__u32	btf_fd;		/* fd pointing to a BTF type data */
 		__u32	btf_key_type_id;	/* BTF type_id of the key */
 		__u32	btf_value_type_id;	/* BTF type_id of the value */
+		__u32	btf_vmlinux_value_type_id;/* BTF type_id of a kernel-
+						   * struct stored as the
+						   * map value
+						   */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -1966,8 +1984,15 @@ enum bpf_func_id {
 /* Current network namespace */
 #define BPF_F_CURRENT_NETNS		(-1L)
 
-/* BPF_FUNC_sk_storage_get flags */
-#define BPF_SK_STORAGE_GET_F_CREATE	(1ULL << 0)
+/* BPF_FUNC_<kernel_obj>_storage_get flags */
+#define BPF_LOCAL_STORAGE_GET_F_CREATE	1ULL
+/* Kept for source compatibility with the original socket helper. */
+#define BPF_SK_STORAGE_GET_F_CREATE	BPF_LOCAL_STORAGE_GET_F_CREATE
+
+/* Flags for bpf_bprm_opts_set helper. */
+enum {
+	BPF_F_BPRM_SECUREEXEC	= (1ULL << 0),
+};
 
 /* Flags for bpf_redirect_map helper. */
 #define BPF_F_BROADCAST		8ULL
@@ -2041,6 +2066,12 @@ enum bpf_hdr_start_off {
 	BPF_HDR_START_NET,
 };
 
+/* Encapsulation type for BPF_FUNC_lwt_push_encap helper. */
+enum bpf_lwt_encap_mode {
+	BPF_LWT_ENCAP_SEG6,
+	BPF_LWT_ENCAP_SEG6_INLINE,
+	BPF_LWT_ENCAP_IP,
+};
 
 #define __bpf_md_ptr(type, name)	\
 union {					\
@@ -2130,7 +2161,15 @@ enum bpf_ret_code {
 	BPF_DROP = 2,
 	/* 3-6 reserved */
 	BPF_REDIRECT = 7,
-	/* >127 are reserved for prog type specific return codes */
+	/* >127 are reserved for prog type specific return codes.
+	 *
+	 * BPF_LWT_REROUTE: used by BPF_PROG_TYPE_LWT_IN and
+	 *    BPF_PROG_TYPE_LWT_XMIT to indicate that skb had been
+	 *    changed and should be routed based on its new L3 header.
+	 *    (This is an L3 redirect, as opposed to L2 redirect
+	 *    represented by BPF_REDIRECT above).
+	 */
+	BPF_LWT_REROUTE = 128,
 };
 
 struct bpf_sock {
