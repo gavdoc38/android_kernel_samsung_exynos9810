@@ -2331,6 +2331,12 @@ struct bpf_map_info {
 	__u32 btf_value_type_id;
 } __attribute__((aligned(8)));
 
+struct bpf_btf_info {
+	__aligned_u64 btf;
+	__u32 btf_size;
+	__u32 id;
+} __attribute__((aligned(8)));
+
 struct bpf_link_info {
 	__u32 type;
 	__u32 id;
