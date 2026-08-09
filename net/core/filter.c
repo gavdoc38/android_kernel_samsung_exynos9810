@@ -6663,16 +6663,12 @@ BPF_CALL_2(bpf_sock_ops_cb_flags_set, struct bpf_sock_ops_kern *, bpf_sock,
 	struct sock *sk = bpf_sock->sk;
 	int val = argval & BPF_SOCK_OPS_ALL_CB_FLAGS;
 
-	if (!sk_fullsock(sk))
+	if (!IS_ENABLED(CONFIG_INET) || !sk_fullsock(sk))
 		return -EINVAL;
 
-#ifdef CONFIG_INET
 	tcp_sk(sk)->bpf_sock_ops_cb_flags = val;
 
 	return argval & (~BPF_SOCK_OPS_ALL_CB_FLAGS);
-#else
-	return -EINVAL;
-#endif
 }
 
 static const struct bpf_func_proto bpf_sock_ops_cb_flags_set_proto = {
@@ -7410,6 +7406,7 @@ tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:
 		return &bpf_sk_storage_delete_proto;
+#ifdef CONFIG_INET
 	case BPF_FUNC_skc_lookup_tcp:
 		return &bpf_tc_skc_lookup_tcp_proto;
 	case BPF_FUNC_sk_lookup_tcp:
@@ -7422,7 +7419,6 @@ tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_tcp_sock_proto;
 	case BPF_FUNC_get_listener_sock:
 		return &bpf_get_listener_sock_proto;
-#ifdef CONFIG_INET
 	case BPF_FUNC_skb_ecn_set_ce:
 		return &bpf_skb_ecn_set_ce_proto;
 	case BPF_FUNC_tcp_check_syncookie:
@@ -7640,6 +7636,7 @@ sk_skb_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_sk_redirect_hash_proto;
 	case BPF_FUNC_perf_event_output:
 		return &bpf_skb_event_output_proto;
+#ifdef CONFIG_INET
 	case BPF_FUNC_skc_lookup_tcp:
 		return &bpf_skc_lookup_tcp_proto;
 	case BPF_FUNC_sk_lookup_tcp:
@@ -7648,6 +7645,7 @@ sk_skb_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_sk_lookup_udp_proto;
 	case BPF_FUNC_sk_release:
 		return &bpf_sk_release_proto;
+#endif
 	default:
 		return bpf_sk_base_func_proto(func_id);
 	}
@@ -10610,6 +10608,10 @@ const struct bpf_func_proto bpf_skc_to_tcp_sock_proto = {
 
 BPF_CALL_1(bpf_skc_to_tcp_timewait_sock, struct sock *, sk)
 {
+	/* These BTF types may otherwise be absent when CONFIG_INET=n. */
+	BTF_TYPE_EMIT(struct inet_timewait_sock);
+	BTF_TYPE_EMIT(struct tcp_timewait_sock);
+
 #ifdef CONFIG_INET
 	if (sk && sk->sk_prot == &tcp_prot &&
 	    sk->sk_state == TCP_TIME_WAIT)
