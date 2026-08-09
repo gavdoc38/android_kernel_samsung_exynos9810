@@ -182,7 +182,7 @@ static int bpf_trace_copy_string(char *buf, void *unsafe_ptr, char fmt_ptype,
 #ifdef CONFIG_ARCH_HAS_NON_OVERLAPPING_ADDRESS_SPACE
 		if ((unsigned long)unsafe_ptr < TASK_SIZE)
 			return strncpy_from_user_nofault(buf, user_ptr, bufsz);
-		fallthrough;
+		/* fall through */
 #endif
 	case 'k':
 		return strncpy_from_unsafe_strict(buf, unsafe_ptr, bufsz);
