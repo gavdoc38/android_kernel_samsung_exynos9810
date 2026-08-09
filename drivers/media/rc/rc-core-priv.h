@@ -21,6 +21,7 @@
 
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <uapi/linux/bpf.h>
 #include <media/rc-core.h>
 
 struct ir_raw_handler {
@@ -47,6 +48,10 @@ struct ir_raw_event_ctrl {
 	/* raw decoder state follows */
 	struct ir_raw_event prev_ev;
 	struct ir_raw_event this_ev;
+#ifdef CONFIG_BPF_LIRC_MODE2
+	u32				bpf_sample;
+	struct bpf_prog_array __rcu	*progs;
+#endif
 	struct nec_dec {
 		int state;
 		unsigned count;
@@ -121,6 +126,9 @@ struct ir_raw_event_ctrl {
 	} xmp;
 };
 
+/* Mutex for locking raw IR processing and handler changes. */
+extern struct mutex ir_raw_handler_lock;
+
 /* macros for IR decoders */
 static inline bool geq_margin(unsigned d1, unsigned d2, unsigned margin)
 {
@@ -163,6 +171,16 @@ void ir_raw_event_unregister(struct rc_dev *dev);
 int ir_raw_handler_register(struct ir_raw_handler *ir_raw_handler);
 void ir_raw_handler_unregister(struct ir_raw_handler *ir_raw_handler);
 void ir_raw_init(void);
+
+/* BPF interface. */
+#ifdef CONFIG_BPF_LIRC_MODE2
+struct rc_dev *rc_dev_get_from_fd(int fd);
+void lirc_bpf_free(struct rc_dev *dev);
+void lirc_bpf_run(struct rc_dev *dev, u32 sample);
+#else
+static inline void lirc_bpf_free(struct rc_dev *dev) { }
+static inline void lirc_bpf_run(struct rc_dev *dev, u32 sample) { }
+#endif
 
 /*
  * Decoder initialization code

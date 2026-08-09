@@ -33,6 +33,7 @@
 static int ir_lirc_decode(struct rc_dev *dev, struct ir_raw_event ev)
 {
 	struct lirc_codec *lirc = &dev->raw->lirc;
+	bool deliver = true;
 	int sample;
 
 	if (!dev->raw->lirc.drv || !dev->raw->lirc.drv->rbuf)
@@ -63,11 +64,9 @@ static int ir_lirc_decode(struct rc_dev *dev, struct ir_raw_event ev)
 		lirc->gap = true;
 		lirc->gap_duration = ev.duration;
 
-		if (!lirc->send_timeout_reports)
-			return 0;
-
 		sample = LIRC_TIMEOUT(ev.duration / 1000);
 		IR_dprintk(2, "timeout report (duration: %d)\n", sample);
+		deliver = lirc->send_timeout_reports;
 
 	/* Normal sample */
 	} else {
@@ -94,6 +93,11 @@ static int ir_lirc_decode(struct rc_dev *dev, struct ir_raw_event ev)
 		IR_dprintk(2, "delivering %uus %s to lirc_dev\n",
 			   TO_US(ev.duration), TO_STR(ev.pulse));
 	}
+
+	/* The synthetic gap above is only for legacy userspace. */
+	lirc_bpf_run(dev, sample);
+	if (!deliver)
+		return 0;
 
 	lirc_buffer_write(dev->raw->lirc.drv->rbuf,
 			  (unsigned char *) &sample);

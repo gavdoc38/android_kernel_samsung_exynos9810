@@ -33,6 +33,19 @@ config IR_LIRC_CODEC
 	   Enable this option to pass raw IR to and from userspace via
 	   the LIRC interface.
 
+config BPF_LIRC_MODE2
+	bool "Support for eBPF programs attached to lirc devices"
+	depends on BPF_SYSCALL
+	depends on RC_CORE=y
+	depends on LIRC=y
+	depends on IR_LIRC_CODEC=y
+	help
+	   Allow attaching eBPF programs to a lirc device using the bpf(2)
+	   syscall command BPF_PROG_ATTACH. This is supported for raw IR
+	   receivers.
+
+	   These eBPF programs can decode IR protocols which are not handled
+	   by the in-kernel decoders and report scancodes or pointer movement.
 
 config IR_NEC_DECODER
 	tristate "Enable IR raw decoder for the NEC protocol"

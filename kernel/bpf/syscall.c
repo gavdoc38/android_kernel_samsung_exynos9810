@@ -11,6 +11,7 @@
  */
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
+#include <linux/bpf_lirc.h>
 #include <linux/bpf_verifier.h>
 #include <linux/btf.h>
 #include <linux/syscalls.h>
@@ -2897,6 +2898,8 @@ attach_type_to_prog_type(enum bpf_attach_type attach_type)
 	case BPF_SK_SKB_STREAM_VERDICT:
 	case BPF_SK_SKB_VERDICT:
 		return BPF_PROG_TYPE_SK_SKB;
+	case BPF_LIRC_MODE2:
+		return BPF_PROG_TYPE_LIRC_MODE2;
 	case BPF_FLOW_DISSECTOR:
 		return BPF_PROG_TYPE_FLOW_DISSECTOR;
 	case BPF_SK_LOOKUP:
@@ -2917,7 +2920,7 @@ attach_type_to_prog_type(enum bpf_attach_type attach_type)
 	}
 }
 
-#ifdef CONFIG_CGROUP_BPF
+#if defined(CONFIG_CGROUP_BPF) || defined(CONFIG_BPF_LIRC_MODE2)
 
 #define BPF_PROG_ATTACH_LAST_FIELD replace_bpf_fd
 
@@ -2928,8 +2931,10 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 {
 	enum bpf_prog_type ptype;
 	struct bpf_prog *prog;
+#ifdef CONFIG_CGROUP_BPF
 	struct bpf_prog *replace_prog = NULL;
 	struct cgroup *cgrp;
+#endif
 	int ret;
 
 	if (!capable(CAP_NET_ADMIN))
@@ -2953,7 +2958,17 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		bpf_prog_put(prog);
 		return -EINVAL;
 	}
+	if (ptype == BPF_PROG_TYPE_LIRC_MODE2) {
+		ret = lirc_prog_attach(attr, prog);
+		if (!ret)
+			return 0;
+		goto out_put_prog;
+	}
 
+#ifndef CONFIG_CGROUP_BPF
+	ret = -EINVAL;
+	goto out_put_prog;
+#else
 	if (ptype == BPF_PROG_TYPE_SK_MSG || ptype == BPF_PROG_TYPE_SK_SKB) {
 		ret = sock_map_get_from_fd(attr, prog);
 		if (!ret)
@@ -2992,6 +3007,7 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 	cgroup_put(cgrp);
 
 	return ret;
+#endif
 
 out_put_prog:
 	bpf_prog_put(prog);
@@ -3003,9 +3019,11 @@ out_put_prog:
 static int bpf_prog_detach(const union bpf_attr *attr)
 {
 	enum bpf_prog_type ptype;
+#ifdef CONFIG_CGROUP_BPF
 	struct bpf_prog *prog;
 	struct cgroup *cgrp;
 	int ret;
+#endif
 
 	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
@@ -3014,6 +3032,12 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 		return -EINVAL;
 
 	ptype = attach_type_to_prog_type(attr->attach_type);
+	if (ptype == BPF_PROG_TYPE_LIRC_MODE2)
+		return lirc_prog_detach(attr);
+
+#ifndef CONFIG_CGROUP_BPF
+	return -EINVAL;
+#else
 	switch (ptype) {
 	case BPF_PROG_TYPE_SK_MSG:
 	case BPF_PROG_TYPE_SK_SKB:
@@ -3045,6 +3069,7 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 		bpf_prog_put(prog);
 	cgroup_put(cgrp);
 	return ret;
+#endif
 }
 
 #define BPF_PROG_QUERY_LAST_FIELD query.prog_cnt
@@ -3052,8 +3077,10 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 static int bpf_prog_query(const union bpf_attr *attr,
 			  union bpf_attr __user *uattr)
 {
+#ifdef CONFIG_CGROUP_BPF
 	struct cgroup *cgrp;
 	int ret;
+#endif
 
 	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
@@ -3061,7 +3088,12 @@ static int bpf_prog_query(const union bpf_attr *attr,
 		return -EINVAL;
 	if (attr->query.query_flags & ~BPF_F_QUERY_EFFECTIVE)
 		return -EINVAL;
+	if (attr->query.attach_type == BPF_LIRC_MODE2)
+		return lirc_prog_query(attr, uattr);
 
+#ifndef CONFIG_CGROUP_BPF
+	return -EINVAL;
+#else
 	switch (attr->query.attach_type) {
 	case BPF_FLOW_DISSECTOR:
 	case BPF_SK_LOOKUP:
@@ -3099,8 +3131,9 @@ static int bpf_prog_query(const union bpf_attr *attr,
 	ret = cgroup_bpf_query(cgrp, attr, uattr);
 	cgroup_put(cgrp);
 	return ret;
+#endif
 }
-#endif /* CONFIG_CGROUP_BPF */
+#endif /* CONFIG_CGROUP_BPF || CONFIG_BPF_LIRC_MODE2 */
 
 #define BPF_PROG_TEST_RUN_LAST_FIELD test.ctx_out
 
@@ -4356,7 +4389,7 @@ static int __sys_bpf(int cmd, bpfptr_t uattr, unsigned int size)
 	case BPF_OBJ_GET:
 		err = bpf_obj_get(&attr);
 		break;
-#ifdef CONFIG_CGROUP_BPF
+#if defined(CONFIG_CGROUP_BPF) || defined(CONFIG_BPF_LIRC_MODE2)
 	case BPF_PROG_ATTACH:
 		err = bpf_prog_attach(&attr);
 		break;

@@ -23,8 +23,8 @@
 /* Used to keep track of IR raw clients, protected by ir_raw_handler_lock */
 static LIST_HEAD(ir_raw_client_list);
 
-/* Used to handle IR raw handler extensions */
-static DEFINE_MUTEX(ir_raw_handler_lock);
+/* Protects raw IR client processing and handler changes. */
+DEFINE_MUTEX(ir_raw_handler_lock);
 static LIST_HEAD(ir_raw_handler_list);
 static DEFINE_MUTEX(available_protocols_lock);
 static u64 available_protocols;
@@ -300,6 +300,7 @@ out:
 
 void ir_raw_event_unregister(struct rc_dev *dev)
 {
+	struct ir_raw_event_ctrl *raw;
 	struct ir_raw_handler *handler;
 
 	if (!dev || !dev->raw)
@@ -312,10 +313,13 @@ void ir_raw_event_unregister(struct rc_dev *dev)
 	list_for_each_entry(handler, &ir_raw_handler_list, list)
 		if (handler->raw_unregister)
 			handler->raw_unregister(dev);
+	lirc_bpf_free(dev);
+
+	raw = dev->raw;
+	dev->raw = NULL;
 	mutex_unlock(&ir_raw_handler_lock);
 
-	kfree(dev->raw);
-	dev->raw = NULL;
+	kfree(raw);
 }
 
 /*

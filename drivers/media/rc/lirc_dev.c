@@ -36,6 +36,7 @@
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
+#include <linux/file.h>
 
 #include <media/rc-core.h>
 #include <media/lirc.h>
@@ -771,6 +772,37 @@ ssize_t lirc_dev_fop_write(struct file *file, const char __user *buffer,
 }
 EXPORT_SYMBOL(lirc_dev_fop_write);
 
+struct rc_dev *rc_dev_get_from_fd(int fd)
+{
+	struct rc_dev *dev = ERR_PTR(-EINVAL);
+	struct fd f = fdget(fd);
+	unsigned int minor;
+	struct irctl *ir;
+
+	if (!f.file)
+		return ERR_PTR(-EBADF);
+
+	if (imajor(file_inode(f.file)) != MAJOR(lirc_base_dev))
+		goto put;
+
+	minor = iminor(file_inode(f.file));
+	if (minor >= MAX_IRCTL_DEVICES)
+		goto put;
+
+	mutex_lock(&lirc_dev_lock);
+	ir = irctls[minor];
+	if (!ir || !ir->attached || !ir->d.rdev) {
+		dev = ERR_PTR(-ENODEV);
+	} else {
+		dev = ir->d.rdev;
+		get_device(&dev->dev);
+	}
+	mutex_unlock(&lirc_dev_lock);
+
+put:
+	fdput(f);
+	return dev;
+}
 
 static int __init lirc_dev_init(void)
 {
