@@ -1845,21 +1845,23 @@ BPF_TRACE_DEFN_x(10);
 BPF_TRACE_DEFN_x(11);
 BPF_TRACE_DEFN_x(12);
 
-static int __bpf_probe_register(struct bpf_raw_event_map *btp, struct bpf_prog *prog)
+static int __bpf_probe_register(struct bpf_raw_event_map *btp,
+				struct bpf_prog *prog)
 {
-struct tracepoint *tp = btp->tp;
+	struct tracepoint *tp = btp->tp;
 
 	/*
 	 * check that program doesn't access arguments beyond what's
 	 * available in this tracepoint
-	*/
+	 */
 	if (prog->aux->max_ctx_offset > btp->num_args * sizeof(u64))
 		return -EINVAL;
 
 	if (prog->aux->max_tp_access > btp->writable_size)
 		return -EINVAL;
 
-	return tracepoint_probe_register(tp, (void *)btp->bpf_func, prog);
+	return tracepoint_probe_register_may_exist(tp, (void *)btp->bpf_func,
+						   prog);
 }
 
 int bpf_probe_register(struct bpf_raw_event_map *btp, struct bpf_prog *prog)
