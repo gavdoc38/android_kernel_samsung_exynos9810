@@ -1,0 +1,48 @@
+// Exynos9810 BPF kernel selftests built inside the Android/Lineage tree.
+//
+// Keep these tests tied to this kernel's UAPI headers. The initial targets
+// intentionally use the legacy in-tree raw bpf() syscall harness; later
+// checkpoints can expand this package with the Linux 5.15.178 test corpus.
+cc_defaults {
+    name: "exynos9810_bpf_selftest_defaults",
+
+    compile_multilib: "64",
+    gtest: false,
+
+    cflags: [
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Wno-sign-compare",
+        "-Wno-unused-parameter",
+    ],
+
+    include_dirs: [
+        "kernel/samsung/exynos9810/include/uapi",
+        "kernel/samsung/exynos9810/tools/include/uapi",
+    ],
+
+    relative_install_path: "exynos9810_bpf",
+    no_named_install_directory: true,
+    test_suites: ["general-tests"],
+}
+
+cc_test {
+    name: "exynos9810_bpf_test_verifier",
+    defaults: ["exynos9810_bpf_selftest_defaults"],
+    srcs: ["test_verifier.c"],
+}
+
+cc_test {
+    name: "exynos9810_bpf_test_maps",
+    defaults: ["exynos9810_bpf_selftest_defaults"],
+    srcs: ["test_maps.c"],
+}
+
+phony {
+    name: "exynos9810_bpf_selftests",
+    required: [
+        "exynos9810_bpf_test_maps",
+        "exynos9810_bpf_test_verifier",
+    ],
+}

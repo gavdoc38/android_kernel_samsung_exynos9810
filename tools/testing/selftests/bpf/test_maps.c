@@ -350,7 +350,7 @@ static void test_devmap(int task, void *data)
 	int fd;
 	__u32 key, value;
 
-	fd = bpf_create_map(BPF_MAP_TYPE_DEVMAP, sizeof(key), sizeof(value),
+	fd = bpf_map_create(BPF_MAP_TYPE_DEVMAP, sizeof(key), sizeof(value),
 			    2, 0);
 	if (fd < 0) {
 		printf("Failed to create arraymap '%s'!\n", strerror(errno));
