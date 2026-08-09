@@ -303,6 +303,11 @@ config IPV6_SEG6_LWTUNNEL
 
 	  If unsure, say N.
 
+config IPV6_SEG6_BPF
+	def_bool y
+	depends on IPV6_SEG6_LWTUNNEL
+	depends on IPV6 = y
+
 config IPV6_SEG6_HMAC
 	bool "IPv6: Segment Routing HMAC support"
 	depends on IPV6

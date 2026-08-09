@@ -15,11 +15,13 @@ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCK, cg_sock,
 	      struct bpf_sock, struct sock)
 BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCK_ADDR, cg_sock_addr,
 	      struct bpf_sock_addr, struct bpf_sock_addr_kern)
-BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_IN, lwt_inout,
+BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_IN, lwt_in,
 	      struct __sk_buff, struct sk_buff)
-BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_OUT, lwt_inout,
+BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_OUT, lwt_out,
 	      struct __sk_buff, struct sk_buff)
 BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_XMIT, lwt_xmit,
+	      struct __sk_buff, struct sk_buff)
+BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_SEG6LOCAL, lwt_seg6local,
 	      struct __sk_buff, struct sk_buff)
 BPF_PROG_TYPE(BPF_PROG_TYPE_SOCK_OPS, sock_ops,
 	      struct bpf_sock_ops, struct bpf_sock_ops_kern)

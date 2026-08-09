@@ -1,8 +1,9 @@
 /*
  *  SR-IPv6 implementation
  *
- *  Author:
+ *  Authors:
  *  David Lebrun <david.lebrun@uclouvain.be>
+ *  eBPF support: Mathieu Xhonneux <m.xhonneux@gmail.com>
  *
  *
  *  This program is free software; you can redistribute it and/or
@@ -33,6 +34,7 @@
 #endif
 #include <net/seg6_local.h>
 #include <linux/etherdevice.h>
+#include <linux/bpf.h>
 
 struct seg6_local_lwt;
 
@@ -43,6 +45,11 @@ struct seg6_action_desc {
 	int static_headroom;
 };
 
+struct bpf_lwt_prog {
+	struct bpf_prog *prog;
+	char *name;
+};
+
 struct seg6_local_lwt {
 	int action;
 	struct ipv6_sr_hdr *srh;
@@ -51,6 +58,7 @@ struct seg6_local_lwt {
 	struct in6_addr nh6;
 	int iif;
 	int oif;
+	struct bpf_lwt_prog bpf;
 
 	int headroom;
 	struct seg6_action_desc *desc;
@@ -471,6 +479,83 @@ drop:
 	return err;
 }
 
+DEFINE_PER_CPU(struct seg6_bpf_srh_state, seg6_bpf_srh_states);
+
+bool seg6_bpf_has_valid_srh(struct sk_buff *skb)
+{
+	struct seg6_bpf_srh_state *srh_state =
+		this_cpu_ptr(&seg6_bpf_srh_states);
+	struct ipv6_sr_hdr *srh = srh_state->srh;
+
+	if (unlikely(!srh))
+		return false;
+
+	if (unlikely(!srh_state->valid)) {
+		if (srh_state->hdrlen & 7)
+			return false;
+
+		srh->hdrlen = (u8)(srh_state->hdrlen >> 3);
+		if (!seg6_validate_srh(srh, (srh->hdrlen + 1) << 3))
+			return false;
+
+		srh_state->valid = true;
+	}
+
+	return true;
+}
+
+static int input_action_end_bpf(struct sk_buff *skb,
+				struct seg6_local_lwt *slwt)
+{
+	struct seg6_bpf_srh_state *srh_state =
+		this_cpu_ptr(&seg6_bpf_srh_states);
+	struct ipv6_sr_hdr *srh;
+	int ret;
+
+	srh = get_and_validate_srh(skb);
+	if (!srh) {
+		kfree_skb(skb);
+		return -EINVAL;
+	}
+	advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+
+	/* Protect the per-CPU SRH state shared with the BPF helpers. */
+	preempt_disable();
+	srh_state->srh = srh;
+	srh_state->hdrlen = srh->hdrlen << 3;
+	srh_state->valid = true;
+
+	rcu_read_lock();
+	bpf_compute_data_pointers(skb);
+	ret = bpf_prog_run_save_cb(slwt->bpf.prog, skb);
+	rcu_read_unlock();
+
+	switch (ret) {
+	case BPF_OK:
+	case BPF_REDIRECT:
+		break;
+	case BPF_DROP:
+		goto drop;
+	default:
+		pr_warn_once("bpf-seg6local: Illegal return value %u\n", ret);
+		goto drop;
+	}
+
+	if (srh_state->srh && !seg6_bpf_has_valid_srh(skb))
+		goto drop;
+
+	preempt_enable();
+	if (ret != BPF_REDIRECT)
+		seg6_lookup_nexthop(skb, NULL, 0);
+
+	return dst_input(skb);
+
+drop:
+	preempt_enable();
+	kfree_skb(skb);
+	return -EINVAL;
+}
+
 static struct seg6_action_desc seg6_action_table[] = {
 	{
 		.action		= SEG6_LOCAL_ACTION_END,
@@ -517,7 +602,12 @@ static struct seg6_action_desc seg6_action_table[] = {
 		.attrs		= (1 << SEG6_LOCAL_SRH),
 		.input		= input_action_end_b6_encap,
 		.static_headroom	= sizeof(struct ipv6hdr),
-	}
+	},
+	{
+		.action		= SEG6_LOCAL_ACTION_END_BPF,
+		.attrs		= (1 << SEG6_LOCAL_BPF),
+		.input		= input_action_end_bpf,
+	},
 };
 
 static struct seg6_action_desc *__get_action_desc(int action)
@@ -562,6 +652,7 @@ static const struct nla_policy seg6_local_policy[SEG6_LOCAL_MAX + 1] = {
 				    .len = sizeof(struct in6_addr) },
 	[SEG6_LOCAL_IIF]	= { .type = NLA_U32 },
 	[SEG6_LOCAL_OIF]	= { .type = NLA_U32 },
+	[SEG6_LOCAL_BPF]	= { .type = NLA_NESTED },
 };
 
 static int parse_nla_srh(struct nlattr **attrs, struct seg6_local_lwt *slwt)
@@ -739,6 +830,76 @@ static int cmp_nla_oif(struct seg6_local_lwt *a, struct seg6_local_lwt *b)
 	return 0;
 }
 
+#define MAX_PROG_NAME 256
+static const struct nla_policy bpf_prog_policy[SEG6_LOCAL_BPF_PROG_MAX + 1] = {
+	[SEG6_LOCAL_BPF_PROG]	   = { .type = NLA_U32, },
+	[SEG6_LOCAL_BPF_PROG_NAME] = { .type = NLA_NUL_STRING,
+				       .len = MAX_PROG_NAME },
+};
+
+static int parse_nla_bpf(struct nlattr **attrs, struct seg6_local_lwt *slwt)
+{
+	struct nlattr *tb[SEG6_LOCAL_BPF_PROG_MAX + 1];
+	struct bpf_prog *prog;
+	int err;
+	u32 fd;
+
+	err = nla_parse_nested(tb, SEG6_LOCAL_BPF_PROG_MAX,
+			       attrs[SEG6_LOCAL_BPF], bpf_prog_policy);
+	if (err < 0)
+		return err;
+
+	if (!tb[SEG6_LOCAL_BPF_PROG] || !tb[SEG6_LOCAL_BPF_PROG_NAME])
+		return -EINVAL;
+
+	slwt->bpf.name = nla_memdup(tb[SEG6_LOCAL_BPF_PROG_NAME], GFP_KERNEL);
+	if (!slwt->bpf.name)
+		return -ENOMEM;
+
+	fd = nla_get_u32(tb[SEG6_LOCAL_BPF_PROG]);
+	prog = bpf_prog_get_type(fd, BPF_PROG_TYPE_LWT_SEG6LOCAL);
+	if (IS_ERR(prog)) {
+		kfree(slwt->bpf.name);
+		slwt->bpf.name = NULL;
+		return PTR_ERR(prog);
+	}
+
+	slwt->bpf.prog = prog;
+	return 0;
+}
+
+static int put_nla_bpf(struct sk_buff *skb, struct seg6_local_lwt *slwt)
+{
+	struct nlattr *nest;
+
+	if (!slwt->bpf.prog)
+		return 0;
+
+	nest = nla_nest_start(skb, SEG6_LOCAL_BPF);
+	if (!nest)
+		return -EMSGSIZE;
+
+	if (nla_put_u32(skb, SEG6_LOCAL_BPF_PROG, slwt->bpf.prog->aux->id))
+		return -EMSGSIZE;
+
+	if (slwt->bpf.name &&
+	    nla_put_string(skb, SEG6_LOCAL_BPF_PROG_NAME, slwt->bpf.name))
+		return -EMSGSIZE;
+
+	return nla_nest_end(skb, nest);
+}
+
+static int cmp_nla_bpf(struct seg6_local_lwt *a, struct seg6_local_lwt *b)
+{
+	if (!a->bpf.name && !b->bpf.name)
+		return 0;
+
+	if (!a->bpf.name || !b->bpf.name)
+		return 1;
+
+	return strcmp(a->bpf.name, b->bpf.name);
+}
+
 struct seg6_action_param {
 	int (*parse)(struct nlattr **attrs, struct seg6_local_lwt *slwt);
 	int (*put)(struct sk_buff *skb, struct seg6_local_lwt *slwt);
@@ -769,6 +930,10 @@ static struct seg6_action_param seg6_action_params[SEG6_LOCAL_MAX + 1] = {
 	[SEG6_LOCAL_OIF]	= { .parse = parse_nla_oif,
 				    .put = put_nla_oif,
 				    .cmp = cmp_nla_oif },
+
+	[SEG6_LOCAL_BPF]	= { .parse = parse_nla_bpf,
+				    .put = put_nla_bpf,
+				    .cmp = cmp_nla_bpf },
 };
 
 static int parse_nla_action(struct nlattr **attrs, struct seg6_local_lwt *slwt)
@@ -853,6 +1018,11 @@ static void seg6_local_destroy_state(struct lwtunnel_state *lwt)
 	struct seg6_local_lwt *slwt = seg6_local_lwtunnel(lwt);
 
 	kfree(slwt->srh);
+
+	if (slwt->desc->attrs & (1 << SEG6_LOCAL_BPF)) {
+		kfree(slwt->bpf.name);
+		bpf_prog_put(slwt->bpf.prog);
+	}
 }
 
 static int seg6_local_fill_encap(struct sk_buff *skb,
@@ -904,6 +1074,11 @@ static int seg6_local_get_encap_size(struct lwtunnel_state *lwt)
 
 	if (attrs & (1 << SEG6_LOCAL_OIF))
 		nlsize += nla_total_size(4);
+
+	if (attrs & (1 << SEG6_LOCAL_BPF))
+		nlsize += nla_total_size(sizeof(struct nlattr)) +
+			  nla_total_size(MAX_PROG_NAME) +
+			  nla_total_size(4);
 
 	return nlsize;
 }

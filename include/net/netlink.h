@@ -692,6 +692,16 @@ static inline int nla_len(const struct nlattr *nla)
 }
 
 /**
+ * nla_memdup - duplicate an attribute payload
+ * @src: netlink attribute to duplicate
+ * @gfp: allocation mask
+ */
+static inline void *nla_memdup(const struct nlattr *src, gfp_t gfp)
+{
+	return kmemdup(nla_data(src), nla_len(src), gfp);
+}
+
+/**
  * nla_ok - check if the netlink attribute fits into the remaining bytes
  * @nla: netlink attribute
  * @remaining: number of bytes remaining in attribute stream

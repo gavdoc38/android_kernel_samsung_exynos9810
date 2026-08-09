@@ -192,6 +192,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_SK_MSG = 16,
 	BPF_PROG_TYPE_RAW_TRACEPOINT = 17,
 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
+	BPF_PROG_TYPE_LWT_SEG6LOCAL = 19,
 	BPF_PROG_TYPE_SK_REUSEPORT = 21,
 	BPF_PROG_TYPE_FLOW_DISSECTOR = 22,
 	BPF_PROG_TYPE_CGROUP_SYSCTL = 23,
@@ -2031,6 +2032,11 @@ enum bpf_hdr_start_off {
 	BPF_HDR_START_NET,
 };
 
+/* Encapsulation type for BPF_FUNC_lwt_push_encap helper. */
+enum bpf_lwt_encap_mode {
+	BPF_LWT_ENCAP_SEG6,
+	BPF_LWT_ENCAP_SEG6_INLINE,
+};
 
 #define __bpf_md_ptr(type, name)	\
 union {					\
