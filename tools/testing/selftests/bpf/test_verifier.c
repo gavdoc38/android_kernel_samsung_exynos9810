@@ -25,7 +25,7 @@
 
 #include <linux/unistd.h>
 #include <linux/filter.h>
-#include <linux/bpf_perf_event.h>
+#include "bpf_perf_event_compat_49.h"
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/btf.h>
@@ -628,7 +628,7 @@ static int load_btf(void)
 		.str_off = sizeof(btf_raw_types),
 		.str_len = sizeof(btf_str_sec),
 	};
-	void *ptr, *raw_btf;
+	unsigned char *ptr, *raw_btf;
 	int btf_fd;
 
 	ptr = raw_btf = malloc(sizeof(hdr) + sizeof(btf_raw_types) +

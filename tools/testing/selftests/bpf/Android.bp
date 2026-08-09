@@ -11,14 +11,17 @@ cc_defaults {
 
     cflags: [
         "-O2",
+        "-UNDEBUG",
         "-Wall",
         "-Wextra",
         "-Wno-sign-compare",
         "-Wno-unused-parameter",
     ],
 
+    // Use the synchronized tools UAPI copy for BPF definitions.  The raw
+    // kernel include/uapi tree is not a userspace headers_install output and
+    // collides with Bionic's libc/kernel headers.
     include_dirs: [
-        "kernel/samsung/exynos9810/include/uapi",
         "kernel/samsung/exynos9810/tools/include/uapi",
     ],
 
