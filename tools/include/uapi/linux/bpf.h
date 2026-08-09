@@ -525,7 +525,9 @@ union bpf_attr {
 		__u32		line_info_cnt;	/* number of bpf_line_info records */
 		__u32		attach_btf_id;	/* in-kernel BTF type id to attach to */
 		union {
-			__u32	attach_prog_fd; /* 0 to attach to vmlinux */
+			/* valid program fd to attach to another BPF program */
+			__u32	attach_prog_fd;
+			/* module BTF fd, or 0 to use vmlinux BTF */
 			__u32	attach_btf_obj_fd;
 		};
 		__u32:32;			/* pad */
