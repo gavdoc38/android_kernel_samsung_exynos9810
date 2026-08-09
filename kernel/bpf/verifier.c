@@ -12655,6 +12655,17 @@ static int check_struct_ops_btf_id(struct bpf_verifier_env *env)
 	return 0;
 }
 
+#define SECURITY_PREFIX "security_"
+
+static int check_attach_modify_return(const char *func_name)
+{
+	if (!strncmp(SECURITY_PREFIX, func_name,
+		     sizeof(SECURITY_PREFIX) - 1))
+		return 0;
+
+	return -EINVAL;
+}
+
 static int check_attach_btf_id(struct bpf_verifier_env *env)
 {
 	struct bpf_prog *prog = env->prog;
@@ -12691,6 +12702,19 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 				      &tgt_info);
 	if (ret)
 		return ret;
+	if (prog->expected_attach_type == BPF_MODIFY_RETURN) {
+		if (tgt_prog) {
+			verbose(env,
+				"can't modify return codes of BPF programs\n");
+			return -EINVAL;
+		}
+		ret = check_attach_modify_return(tgt_info.tgt_name);
+		if (ret) {
+			verbose(env, "%s() is not modifiable\n",
+				tgt_info.tgt_name);
+			return ret;
+		}
+	}
 	if (tgt_prog && prog->type == BPF_PROG_TYPE_EXT) {
 		env->ops = bpf_verifier_ops[tgt_prog->type];
 		prog->expected_attach_type = tgt_prog->expected_attach_type;

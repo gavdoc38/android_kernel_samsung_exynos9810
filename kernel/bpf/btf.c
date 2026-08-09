@@ -4926,19 +4926,38 @@ bool btf_ctx_access(int off, int size, enum bpf_access_type type,
 		args++;
 		nr_args--;
 	}
-	if ((prog->expected_attach_type == BPF_TRACE_FEXIT ||
-	     prog->expected_attach_type == BPF_MODIFY_RETURN ||
-	     prog->expected_attach_type == BPF_LSM_MAC) &&
-	    arg == nr_args) {
-		if (!t)
-			/* The next argument is the return value. */
-			return true;
-		/* function return type */
-		t = btf_type_by_id(btf, t->type);
-	} else if (arg >= nr_args) {
+
+	if (arg > nr_args) {
 		bpf_log(log, "func '%s' doesn't have %d-th argument\n",
 			tname, arg + 1);
 		return false;
+	}
+
+	if (arg == nr_args) {
+		switch (prog->expected_attach_type) {
+		case BPF_LSM_MAC:
+		case BPF_TRACE_FEXIT:
+			if (!t)
+				return true;
+			t = btf_type_by_id(btf, t->type);
+			break;
+		case BPF_MODIFY_RETURN:
+			if (!t)
+				return false;
+
+			t = btf_type_skip_modifiers(btf, t->type, NULL);
+			if (!btf_type_is_small_int(t)) {
+				bpf_log(log,
+					"ret type %s not allowed for fmod_ret\n",
+					btf_kind_str[BTF_INFO_KIND(t->info)]);
+				return false;
+			}
+			break;
+		default:
+			bpf_log(log, "func '%s' doesn't have %d-th argument\n",
+				tname, arg + 1);
+			return false;
+		}
 	} else {
 		if (!t)
 			/* Default program with register arguments. */
@@ -4949,7 +4968,7 @@ bool btf_ctx_access(int off, int size, enum bpf_access_type type,
 	/* skip modifiers */
 	while (btf_type_is_modifier(t))
 		t = btf_type_by_id(btf, t->type);
-	if (btf_type_is_int(t))
+	if (btf_type_is_small_int(t) || btf_type_is_enum(t))
 		/* accessing a scalar */
 		return true;
 	if (!btf_type_is_ptr(t)) {
