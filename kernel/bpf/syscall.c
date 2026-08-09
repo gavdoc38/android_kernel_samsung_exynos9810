@@ -1716,6 +1716,8 @@ static void bpf_prog_put_deferred(struct work_struct *work)
 	trace_bpf_prog_put_rcu(prog);
 	bpf_prog_kallsyms_del(prog);
 	btf_put(aux->btf);
+	if (aux->attach_btf)
+		btf_put(aux->attach_btf);
 	kvfree(aux->func_info);
 	kfree(aux->func_info_aux);
 	bpf_prog_free_linfo(prog);
@@ -2074,6 +2076,22 @@ static int bpf_prog_load(union bpf_attr *attr, bpfptr_t uattr)
 	prog->expected_attach_type = attr->expected_attach_type;
 	prog->aux->attach_btf_id = attr->attach_btf_id;
 	prog->aux->sleepable = attr->prog_flags & BPF_F_SLEEPABLE;
+	if (attr->attach_btf_id && !attr->attach_prog_fd) {
+		struct btf *btf;
+
+		btf = bpf_get_btf_vmlinux();
+		if (IS_ERR(btf)) {
+			err = PTR_ERR(btf);
+			goto free_prog_nouncharge;
+		}
+		if (!btf) {
+			err = -EINVAL;
+			goto free_prog_nouncharge;
+		}
+
+		btf_get(btf);
+		prog->aux->attach_btf = btf;
+	}
 	if (attr->attach_prog_fd) {
 		struct bpf_prog *tgt_prog;
 
@@ -2167,6 +2185,8 @@ free_prog:
 free_prog_sec:
 	security_bpf_prog_free(prog->aux);
 free_prog_nouncharge:
+	if (prog->aux->attach_btf)
+		btf_put(prog->aux->attach_btf);
 	bpf_prog_free(prog);
 	return err;
 }
@@ -2478,7 +2498,7 @@ static int bpf_tracing_prog_attach(struct bpf_prog *prog,
 			tgt_prog = NULL;
 			goto out_put_prog;
 		}
-		key = bpf_trampoline_compute_key(tgt_prog, btf_id);
+		key = bpf_trampoline_compute_key(tgt_prog, NULL, btf_id);
 	}
 
 	link = kzalloc(sizeof(*link), GFP_USER);
@@ -2498,7 +2518,8 @@ static int bpf_tracing_prog_attach(struct bpf_prog *prog,
 			goto out_unlock;
 		}
 		btf_id = prog->aux->attach_btf_id;
-		key = bpf_trampoline_compute_key(NULL, btf_id);
+		key = bpf_trampoline_compute_key(NULL, prog->aux->attach_btf,
+						 btf_id);
 	}
 	if (!prog->aux->dst_trampoline ||
 	    (key && key != prog->aux->dst_trampoline->key)) {
@@ -3464,7 +3485,7 @@ static int bpf_prog_get_info_by_fd(struct bpf_prog *prog,
 		u32 krec_size = sizeof(struct bpf_func_info);
 		u32 ucnt, urec_size;
 
-		info.btf_id = btf_id(prog->aux->btf);
+		info.btf_id = btf_obj_id(prog->aux->btf);
 
 		ucnt = info.func_info_cnt;
 		info.func_info_cnt = prog->aux->func_info_cnt;
@@ -3561,7 +3582,7 @@ static int bpf_map_get_info_by_fd(struct bpf_map *map,
 	memcpy(info.name, map->name, sizeof(map->name));
 
 	if (map->btf) {
-		info.btf_id = btf_id(map->btf);
+		info.btf_id = btf_obj_id(map->btf);
 		info.btf_key_type_id = map->btf_key_type_id;
 		info.btf_value_type_id = map->btf_value_type_id;
 	}

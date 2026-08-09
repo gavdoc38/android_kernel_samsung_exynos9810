@@ -219,6 +219,7 @@ struct bpf_call_arg_meta {
 	int mem_size;
 	int map_uid;
 	int func_id;
+	struct btf *ret_btf;
 	u32 ret_btf_id;
 	u32 subprogno;
 };
@@ -515,10 +516,9 @@ static struct bpf_func_state *func(struct bpf_verifier_env *env,
 	return cur->frame[reg->frameno];
 }
 
-const char *kernel_type_name(u32 id)
+static const char *kernel_type_name(const struct btf *btf, u32 id)
 {
-	return btf_name_by_offset(btf_vmlinux,
-				  btf_type_by_id(btf_vmlinux, id)->name_off);
+	return btf_name_by_offset(btf, btf_type_by_id(btf, id)->name_off);
 }
 
 static void print_verifier_state(struct bpf_verifier_env *env,
@@ -549,7 +549,9 @@ static void print_verifier_state(struct bpf_verifier_env *env,
 			if (t == PTR_TO_BTF_ID ||
 			    t == PTR_TO_BTF_ID_OR_NULL ||
 			    t == PTR_TO_PERCPU_BTF_ID)
-				verbose(env, "%s", kernel_type_name(reg->btf_id));
+				verbose(env, "%s",
+					kernel_type_name(reg->btf,
+							 reg->btf_id));
 			verbose(env, "(id=%d", reg->id);
 			if (reg_type_may_be_refcounted_or_null(t))
 				verbose(env, ",ref_obj_id=%d", reg->ref_obj_id);
@@ -2674,7 +2676,7 @@ static int check_packet_access(struct bpf_verifier_env *env, u32 regno, int off,
 /* check access to 'struct bpf_context' fields.  Supports fixed offsets only */
 static int check_ctx_access(struct bpf_verifier_env *env, int insn_idx, int off, int size,
 			    enum bpf_access_type t, enum bpf_reg_type *reg_type,
-			    u32 *btf_id, u32 *ctx_ptr_id,
+			    struct btf **btf, u32 *btf_id, u32 *ctx_ptr_id,
 			    u32 *ctx_ptr_readonly)
 {
 	struct bpf_insn_access_aux info = {
@@ -2700,10 +2702,12 @@ static int check_ctx_access(struct bpf_verifier_env *env, int insn_idx, int off,
 		*ctx_ptr_readonly = info.ctx_ptr_readonly;
 
 		if (*reg_type == PTR_TO_BTF_ID ||
-		    *reg_type == PTR_TO_BTF_ID_OR_NULL)
+		    *reg_type == PTR_TO_BTF_ID_OR_NULL) {
+			*btf = info.btf;
 			*btf_id = info.btf_id;
-		else
+		} else {
 			env->insn_aux_data[insn_idx].ctx_field_size = info.ctx_field_size;
+		}
 		/* remember the offset of last byte accessed in ctx */
 		if (env->prog->aux->max_ctx_offset < off + size)
 			env->prog->aux->max_ctx_offset = off + size;
@@ -3258,8 +3262,8 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 				   int value_regno)
 {
 	struct bpf_reg_state *reg = regs + regno;
-	const struct btf_type *t = btf_type_by_id(btf_vmlinux, reg->btf_id);
-	const char *tname = btf_name_by_offset(btf_vmlinux, t->name_off);
+	const struct btf_type *t = btf_type_by_id(reg->btf, reg->btf_id);
+	const char *tname = btf_name_by_offset(reg->btf, t->name_off);
 	u32 btf_id;
 	int ret;
 
@@ -3284,7 +3288,12 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 		return -EACCES;
 	}
 
-	ret = btf_struct_access(&env->log, t, off, size, atype, &btf_id);
+	if (env->ops->btf_struct_access)
+		ret = env->ops->btf_struct_access(&env->log, reg->btf, t,
+						  off, size, atype, &btf_id);
+	else
+		ret = btf_struct_access(&env->log, reg->btf, t, off, size,
+					atype, &btf_id);
 	if (ret < 0)
 		return ret;
 
@@ -3294,6 +3303,7 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 	}
 	mark_reg_known_zero(env, regs, value_regno);
 	regs[value_regno].type = PTR_TO_BTF_ID;
+	regs[value_regno].btf = reg->btf;
 	regs[value_regno].btf_id = btf_id;
 	return 0;
 }
@@ -3382,6 +3392,7 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			mark_reg_unknown(env, regs, value_regno);
 	} else if (reg->type == PTR_TO_CTX) {
 		enum bpf_reg_type reg_type = SCALAR_VALUE;
+		struct btf *btf = NULL;
 		u32 btf_id = 0;
 		u32 ctx_ptr_id = 0;
 		u32 ctx_ptr_readonly = 0;
@@ -3396,7 +3407,7 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			return err;
 
 		err = check_ctx_access(env, insn_idx, off, size, t, &reg_type,
-				       &btf_id, &ctx_ptr_id,
+				       &btf, &btf_id, &ctx_ptr_id,
 				       &ctx_ptr_readonly);
 		if (err)
 			verbose_linfo(env, insn_idx, "; ");
@@ -3416,8 +3427,10 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 					regs[value_regno].id = ++env->id_gen;
 				regs[value_regno].subreg_def = DEF_NOT_SUBREG;
 				if (reg_type == PTR_TO_BTF_ID ||
-				    reg_type == PTR_TO_BTF_ID_OR_NULL)
+				    reg_type == PTR_TO_BTF_ID_OR_NULL) {
+					regs[value_regno].btf = btf;
 					regs[value_regno].btf_id = btf_id;
+				}
 			}
 			regs[value_regno].type = reg_type;
 		}
@@ -4144,11 +4157,13 @@ found:
 			arg_btf_id = compatible->btf_id;
 		}
 
-		if (!btf_struct_ids_match(&env->log, reg->off, reg->btf_id,
+		if (!btf_struct_ids_match(&env->log, reg->btf, reg->btf_id,
+					  reg->off, btf_vmlinux,
 					  *arg_btf_id)) {
 			verbose(env, "R%d is of type %s but %s is expected\n",
-				regno, kernel_type_name(reg->btf_id),
-				kernel_type_name(*arg_btf_id));
+				regno,
+				kernel_type_name(reg->btf, reg->btf_id),
+				kernel_type_name(btf_vmlinux, *arg_btf_id));
 			return -EACCES;
 		}
 
@@ -4254,6 +4269,7 @@ force_off_check:
 				regno);
 			return -EACCES;
 		}
+		meta->ret_btf = reg->btf;
 		meta->ret_btf_id = reg->btf_id;
 	}
 
@@ -5495,7 +5511,8 @@ static int check_helper_call(struct bpf_verifier_env *env,
 
 		maybe_null = fn->ret_type == RET_PTR_TO_MEM_OR_BTF_ID_OR_NULL;
 		mark_reg_known_zero(env, regs, BPF_REG_0);
-		t = btf_type_skip_modifiers(btf_vmlinux, meta.ret_btf_id, NULL);
+		t = btf_type_skip_modifiers(meta.ret_btf, meta.ret_btf_id,
+					    NULL);
 		if (!t) {
 			verbose(env, "invalid return BTF ID %u of func %s#%d\n",
 				meta.ret_btf_id, func_id_name(func_id), func_id);
@@ -5506,10 +5523,10 @@ static int check_helper_call(struct bpf_verifier_env *env,
 			const char *tname;
 			u32 tsize;
 
-			ret = btf_resolve_size(btf_vmlinux, t, &tsize);
+			ret = btf_resolve_size(meta.ret_btf, t, &tsize);
 			if (IS_ERR(ret)) {
-				tname = btf_name_by_offset(btf_vmlinux,
-						   t->name_off);
+				tname = btf_name_by_offset(meta.ret_btf,
+							   t->name_off);
 				verbose(env,
 					"unable to resolve size of type '%s': %ld\n",
 					tname, PTR_ERR(ret));
@@ -5521,6 +5538,7 @@ static int check_helper_call(struct bpf_verifier_env *env,
 		} else {
 			regs[BPF_REG_0].type = maybe_null ?
 				PTR_TO_BTF_ID_OR_NULL : PTR_TO_BTF_ID;
+			regs[BPF_REG_0].btf = meta.ret_btf;
 			regs[BPF_REG_0].btf_id = meta.ret_btf_id;
 		}
 	} else if (fn->ret_type == RET_PTR_TO_BTF_ID_OR_NULL ||
@@ -5537,6 +5555,8 @@ static int check_helper_call(struct bpf_verifier_env *env,
 				fn->ret_type, func_id_name(func_id), func_id);
 			return -EINVAL;
 		}
+		/* Helper prototypes are defined by built-in vmlinux BTF. */
+		regs[BPF_REG_0].btf = btf_vmlinux;
 		regs[BPF_REG_0].btf_id = ret_btf_id;
 	} else {
 		verbose(env, "unknown return type %d of func %s#%d\n",
@@ -7975,6 +7995,7 @@ static int check_ld_imm(struct bpf_verifier_env *env, struct bpf_insn *insn)
 			break;
 		case PTR_TO_BTF_ID:
 		case PTR_TO_PERCPU_BTF_ID:
+			dst_reg->btf = aux->btf_var.btf;
 			dst_reg->btf_id = aux->btf_var.btf_id;
 			break;
 		default:
@@ -9868,6 +9889,7 @@ static int check_pseudo_btf_id(struct bpf_verifier_env *env,
 	t = btf_type_skip_modifiers(btf_vmlinux, type, NULL);
 	if (percpu) {
 		aux->btf_var.reg_type = PTR_TO_PERCPU_BTF_ID;
+		aux->btf_var.btf = btf_vmlinux;
 		aux->btf_var.btf_id = type;
 	} else if (!btf_type_is_struct(t)) {
 		const struct btf_type *ret;
@@ -9886,6 +9908,7 @@ static int check_pseudo_btf_id(struct bpf_verifier_env *env,
 		aux->btf_var.mem_size = tsize;
 	} else {
 		aux->btf_var.reg_type = PTR_TO_BTF_ID;
+		aux->btf_var.btf = btf_vmlinux;
 		aux->btf_var.btf_id = type;
 	}
 
@@ -11539,7 +11562,8 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		return 0;
 	}
 
-	key = bpf_trampoline_compute_key(tgt_prog, btf_id);
+	key = bpf_trampoline_compute_key(tgt_prog, prog->aux->attach_btf,
+					 btf_id);
 	tr = bpf_trampoline_get(key, &tgt_info);
 	if (!tr)
 		return -ENOMEM;

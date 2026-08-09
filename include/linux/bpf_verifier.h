@@ -8,6 +8,7 @@
 #define _LINUX_BPF_VERIFIER_H 1
 
 #include <linux/bpf.h> /* for enum bpf_reg_type */
+#include <linux/btf.h> /* for struct btf and btf_obj_id() */
 #include <linux/filter.h> /* for MAX_BPF_STACK */
 #include <linux/tnum.h>
 
@@ -62,7 +63,11 @@ struct bpf_reg_state {
 			u32 map_uid;
 		};
 
-		u32 btf_id; /* for PTR_TO_BTF_ID */
+		/* for PTR_TO_BTF_ID */
+		struct {
+			struct btf *btf;
+			u32 btf_id;
+		};
 		u32 mem_size; /* for PTR_TO_MEM | PTR_TO_MEM_OR_NULL */
 		u32 subprogno; /* for PTR_TO_FUNC */
 		/* Max size from any of the above. */
@@ -349,7 +354,10 @@ struct bpf_insn_aux_data {
 		struct {
 			enum bpf_reg_type reg_type;	/* type of pseudo BTF ID */
 			union {
-				u32 btf_id;	/* BTF ID for struct-typed var */
+				struct {
+					struct btf *btf;
+					u32 btf_id; /* BTF type ID */
+				};
 				u32 mem_size;	/* size for non-struct var */
 			};
 		} btf_var;
@@ -508,9 +516,12 @@ static inline void *__compat_kvcalloc(size_t n, size_t size, gfp_t flags)
 
 /* Kept in verifier.h because this dereferences tgt_prog. */
 static inline u64 bpf_trampoline_compute_key(const struct bpf_prog *tgt_prog,
-					     u32 btf_id)
+					     struct btf *btf, u32 btf_id)
 {
-	return tgt_prog ? (((u64)tgt_prog->aux->id) << 32 | btf_id) : btf_id;
+	if (tgt_prog)
+		return ((u64)tgt_prog->aux->id << 32) | btf_id;
+
+	return ((u64)btf_obj_id(btf) << 32) | 0x80000000 | btf_id;
 }
 
 int bpf_check_attach_target(struct bpf_verifier_log *log,
