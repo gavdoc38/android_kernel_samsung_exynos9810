@@ -12,3 +12,12 @@ Contact:	bpf@vger.kernel.org
 Description:
 		Read-only binary attribute exposing the kernel's own BTF type
 		information with a description of internal kernel types.
+
+What:		/sys/kernel/btf/<module-name>
+Date:		Nov 2020
+KernelVersion:	5.11
+Contact:	bpf@vger.kernel.org
+Description:
+		Read-only binary attribute exposing a kernel module's BTF type
+		information as an add-on to the kernel BTF in
+		/sys/kernel/btf/vmlinux.
