@@ -129,7 +129,7 @@ struct netlink_callback {
 	/* the module that dump function belong to */
 	struct module		*module;
 	u16			family;
-	u16			min_dump_alloc;
+	u32			min_dump_alloc;
 	unsigned int		prev_seq, seq;
 	long			args[6];
 };
@@ -149,7 +149,7 @@ struct netlink_dump_control {
 	int (*done)(struct netlink_callback *);
 	void *data;
 	struct module *module;
-	u16 min_dump_alloc;
+	u32 min_dump_alloc;
 };
 
 extern int __netlink_dump_start(struct sock *ssk, struct sk_buff *skb,

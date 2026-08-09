@@ -110,7 +110,7 @@ static int raw_diag_dump_one(struct sk_buff *in_skb,
 		return -ENOMEM;
 	}
 
-	err = inet_sk_diag_fill(sk, NULL, rep, r,
+	err = inet_sk_diag_fill(sk, NULL, rep, NULL, r,
 				sk_user_ns(NETLINK_CB(in_skb).sk),
 				NETLINK_CB(in_skb).portid,
 				nlh->nlmsg_seq, 0, nlh,
@@ -138,7 +138,7 @@ static int sk_diag_dump(struct sock *sk, struct sk_buff *skb,
 	if (!inet_diag_bc_sk(bc, sk))
 		return 0;
 
-	return inet_sk_diag_fill(sk, NULL, skb, r,
+	return inet_sk_diag_fill(sk, NULL, skb, cb, r,
 				 sk_user_ns(NETLINK_CB(cb->skb).sk),
 				 NETLINK_CB(cb->skb).portid,
 				 cb->nlh->nlmsg_seq, NLM_F_MULTI,
