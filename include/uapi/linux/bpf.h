@@ -2036,6 +2036,7 @@ enum bpf_hdr_start_off {
 enum bpf_lwt_encap_mode {
 	BPF_LWT_ENCAP_SEG6,
 	BPF_LWT_ENCAP_SEG6_INLINE,
+	BPF_LWT_ENCAP_IP,
 };
 
 #define __bpf_md_ptr(type, name)	\
@@ -2126,7 +2127,15 @@ enum bpf_ret_code {
 	BPF_DROP = 2,
 	/* 3-6 reserved */
 	BPF_REDIRECT = 7,
-	/* >127 are reserved for prog type specific return codes */
+	/* >127 are reserved for prog type specific return codes.
+	 *
+	 * BPF_LWT_REROUTE: used by BPF_PROG_TYPE_LWT_IN and
+	 *    BPF_PROG_TYPE_LWT_XMIT to indicate that skb had been
+	 *    changed and should be routed based on its new L3 header.
+	 *    (This is an L3 redirect, as opposed to L2 redirect
+	 *    represented by BPF_REDIRECT above).
+	 */
+	BPF_LWT_REROUTE = 128,
 };
 
 struct bpf_sock {

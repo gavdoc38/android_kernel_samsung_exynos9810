@@ -922,10 +922,17 @@ static struct pernet_operations inet6_net_ops = {
 	.exit = inet6_net_exit,
 };
 
+static int ipv6_route_input_stub(struct sk_buff *skb)
+{
+	ip6_route_input(skb);
+	return skb_dst(skb)->error;
+}
+
 static const struct ipv6_stub ipv6_stub_impl = {
 	.ipv6_sock_mc_join = ipv6_sock_mc_join,
 	.ipv6_sock_mc_drop = ipv6_sock_mc_drop,
 	.ipv6_dst_lookup_flow = ip6_dst_lookup_flow,
+	.ipv6_route_input = ipv6_route_input_stub,
 	.udpv6_encap_enable = udpv6_encap_enable,
 	.ndisc_send_na = ndisc_send_na,
 	.nd_tbl	= &nd_tbl,

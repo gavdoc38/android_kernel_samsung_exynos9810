@@ -115,8 +115,14 @@ static struct dst_entry *eafnosupport_ipv6_dst_lookup_flow(struct net *net,
 	return ERR_PTR(-EAFNOSUPPORT);
 }
 
+static int eafnosupport_ipv6_route_input(struct sk_buff *skb)
+{
+	return -EAFNOSUPPORT;
+}
+
 const struct ipv6_stub *ipv6_stub __read_mostly = &(struct ipv6_stub) {
 	.ipv6_dst_lookup_flow = eafnosupport_ipv6_dst_lookup_flow,
+	.ipv6_route_input = eafnosupport_ipv6_route_input,
 };
 EXPORT_SYMBOL_GPL(ipv6_stub);
 

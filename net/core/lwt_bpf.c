@@ -16,6 +16,12 @@
 #include <linux/types.h>
 #include <linux/bpf.h>
 #include <net/lwtunnel.h>
+#include <net/addrconf.h>
+#include <net/gre.h>
+#include <net/inet_sock.h>
+#include <net/ip6_route.h>
+#include <net/l3mdev.h>
+#include <net/route.h>
 
 struct bpf_lwt_prog {
 	struct bpf_prog *prog;
@@ -44,12 +50,13 @@ static int run_lwt_bpf(struct sk_buff *skb, struct bpf_lwt_prog *lwt,
 {
 	int ret;
 
-	/* Preempt disable is needed to protect per-cpu redirect_info between
-	 * BPF prog and skb_do_redirect(). The call_rcu in bpf_prog_put() and
-	 * access to maps strictly require a rcu_read_lock() for protection,
-	 * mixing with BH RCU lock doesn't work.
+	/* Preempt and BH disable are needed to protect per-cpu redirect_info
+	 * between the BPF program and skb_do_redirect(). This tree predates
+	 * migrate_disable(), while program and map access still require the
+	 * explicit RCU read-side critical section.
 	 */
 	preempt_disable();
+	local_bh_disable();
 	rcu_read_lock();
 	bpf_compute_data_pointers(skb);
 	ret = bpf_prog_run_save_cb(lwt->prog, skb);
@@ -57,6 +64,7 @@ static int run_lwt_bpf(struct sk_buff *skb, struct bpf_lwt_prog *lwt,
 
 	switch (ret) {
 	case BPF_OK:
+	case BPF_LWT_REROUTE:
 		break;
 
 	case BPF_REDIRECT:
@@ -66,8 +74,9 @@ static int run_lwt_bpf(struct sk_buff *skb, struct bpf_lwt_prog *lwt,
 			ret = BPF_OK;
 		} else {
 			skb_reset_mac_header(skb);
-			skb_do_redirect(skb);
-			ret = BPF_REDIRECT;
+			ret = skb_do_redirect(skb);
+			if (!ret)
+				ret = BPF_REDIRECT;
 		}
 		break;
 
@@ -83,9 +92,40 @@ static int run_lwt_bpf(struct sk_buff *skb, struct bpf_lwt_prog *lwt,
 		break;
 	}
 
+	local_bh_enable();
 	preempt_enable();
 
 	return ret;
+}
+
+static int bpf_lwt_input_reroute(struct sk_buff *skb)
+{
+	int err = -EINVAL;
+
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct net_device *dev = skb_dst(skb)->dev;
+		struct iphdr *iph = ip_hdr(skb);
+
+		dev_hold(dev);
+		skb_dst_drop(skb);
+		err = ip_route_input_noref(skb, iph->daddr, iph->saddr,
+					   iph->tos, dev);
+		dev_put(dev);
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		skb_dst_drop(skb);
+		err = ipv6_stub->ipv6_route_input(skb);
+	} else {
+		err = -EAFNOSUPPORT;
+	}
+
+	if (err)
+		goto err;
+
+	return dst_input(skb);
+
+err:
+	kfree_skb(skb);
+	return err;
 }
 
 static int bpf_input(struct sk_buff *skb)
@@ -99,11 +139,11 @@ static int bpf_input(struct sk_buff *skb)
 		ret = run_lwt_bpf(skb, &bpf->in, dst, NO_REDIRECT);
 		if (ret < 0)
 			return ret;
+		if (ret == BPF_LWT_REROUTE)
+			return bpf_lwt_input_reroute(skb);
 	}
 
 	if (unlikely(!dst->lwtstate->orig_input)) {
-		pr_warn_once("orig_input not set on dst for prog %s\n",
-			     bpf->out.name);
 		kfree_skb(skb);
 		return -EINVAL;
 	}
@@ -146,6 +186,109 @@ static int xmit_check_hhlen(struct sk_buff *skb, int hh_len)
 	return 0;
 }
 
+static int bpf_lwt_xmit_reroute(struct sk_buff *skb)
+{
+	struct net_device *l3mdev;
+	struct dst_entry *dst = NULL;
+	int err = -EAFNOSUPPORT;
+	struct sock *sk;
+	struct net *net;
+	bool ipv4;
+	int oif;
+
+	rcu_read_lock();
+	l3mdev = l3mdev_master_dev_rcu(skb_dst(skb)->dev);
+	oif = l3mdev ? l3mdev->ifindex : 0;
+	rcu_read_unlock();
+
+	if (skb->protocol == htons(ETH_P_IP))
+		ipv4 = true;
+	else if (skb->protocol == htons(ETH_P_IPV6))
+		ipv4 = false;
+	else
+		goto err;
+
+	sk = sk_to_full_sk(skb->sk);
+	if (sk) {
+		if (sk->sk_bound_dev_if)
+			oif = sk->sk_bound_dev_if;
+		net = sock_net(sk);
+	} else {
+		net = dev_net(skb_dst(skb)->dev);
+	}
+
+	if (ipv4) {
+		struct iphdr *iph = ip_hdr(skb);
+		struct flowi4 fl4 = {};
+		struct rtable *rt;
+
+		fl4.flowi4_oif = oif;
+		fl4.flowi4_mark = skb->mark;
+		fl4.flowi4_uid = sock_net_uid(net, sk);
+		fl4.flowi4_tos = RT_TOS(iph->tos);
+		fl4.flowi4_flags = FLOWI_FLAG_ANYSRC;
+		fl4.flowi4_proto = iph->protocol;
+		fl4.daddr = iph->daddr;
+		fl4.saddr = iph->saddr;
+
+		rt = ip_route_output_key(net, &fl4);
+		if (IS_ERR(rt)) {
+			err = PTR_ERR(rt);
+			goto err;
+		}
+		dst = &rt->dst;
+	} else {
+		struct ipv6hdr *iph6 = ipv6_hdr(skb);
+		struct flowi6 fl6 = {};
+
+		fl6.flowi6_oif = oif;
+		fl6.flowi6_mark = skb->mark;
+		fl6.flowi6_uid = sock_net_uid(net, sk);
+		fl6.flowlabel = ip6_flowinfo(iph6);
+		fl6.flowi6_proto = iph6->nexthdr;
+		fl6.daddr = iph6->daddr;
+		fl6.saddr = iph6->saddr;
+
+		dst = ipv6_stub->ipv6_dst_lookup_flow(net, skb->sk, &fl6,
+						      NULL);
+		if (IS_ERR(dst)) {
+			err = PTR_ERR(dst);
+			dst = NULL;
+			goto err;
+		}
+	}
+
+	if (unlikely(dst->error)) {
+		err = dst->error;
+		dst_release(dst);
+		dst = NULL;
+		goto err;
+	}
+
+	/* Headroom was reserved for the previous dst. Reserve it again in
+	 * case the newly selected output device needs a larger link header.
+	 */
+	err = skb_cow_head(skb, LL_RESERVED_SPACE(dst->dev));
+	if (unlikely(err)) {
+		dst_release(dst);
+		dst = NULL;
+		goto err;
+	}
+
+	skb_dst_drop(skb);
+	skb_dst_set(skb, dst);
+
+	err = dst_output(dev_net(skb_dst(skb)->dev), skb->sk, skb);
+	if (unlikely(err))
+		return err;
+
+	return LWTUNNEL_XMIT_DONE;
+
+err:
+	kfree_skb(skb);
+	return err;
+}
+
 static int bpf_xmit(struct sk_buff *skb)
 {
 	struct dst_entry *dst = skb_dst(skb);
@@ -153,12 +296,18 @@ static int bpf_xmit(struct sk_buff *skb)
 
 	bpf = bpf_lwt_lwtunnel(dst->lwtstate);
 	if (bpf->xmit.prog) {
+		__be16 proto = skb->protocol;
 		int hh_len = dst->dev->hard_header_len;
 		int ret;
 
 		ret = run_lwt_bpf(skb, &bpf->xmit, dst, CAN_REDIRECT);
 		switch (ret) {
 		case BPF_OK:
+			/* A changed L3 protocol needs a fresh route lookup. */
+			if (skb->protocol != proto) {
+				kfree_skb(skb);
+				return -EINVAL;
+			}
 			/* If the header was expanded, headroom might be too
 			 * small for L2 header to come, expand as needed.
 			 */
@@ -169,6 +318,8 @@ static int bpf_xmit(struct sk_buff *skb)
 			return LWTUNNEL_XMIT_CONTINUE;
 		case BPF_REDIRECT:
 			return LWTUNNEL_XMIT_DONE;
+		case BPF_LWT_REROUTE:
+			return bpf_lwt_xmit_reroute(skb);
 		default:
 			return ret;
 		}
@@ -387,6 +538,134 @@ static const struct lwtunnel_encap_ops bpf_encap_ops = {
 	.cmp_encap	= bpf_encap_cmp,
 	.owner		= THIS_MODULE,
 };
+
+static int handle_gso_type(struct sk_buff *skb, unsigned int gso_type,
+			   int encap_len)
+{
+	struct skb_shared_info *shinfo = skb_shinfo(skb);
+
+	gso_type |= SKB_GSO_DODGY;
+	shinfo->gso_type |= gso_type;
+	skb_decrease_gso_size(shinfo, encap_len);
+	shinfo->gso_segs = 0;
+	return 0;
+}
+
+static int handle_gso_encap(struct sk_buff *skb, bool ipv4, int encap_len)
+{
+	int next_hdr_offset;
+	void *next_hdr;
+	__u8 protocol;
+
+	/* SCTP and UDP_L4 GSO need more nuanced handling than decreasing
+	 * gso_size, so only TCP GSO packets are accepted here.
+	 */
+	if (!(skb_shinfo(skb)->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6)))
+		return -ENOTSUPP;
+
+	if (ipv4) {
+		protocol = ip_hdr(skb)->protocol;
+		next_hdr_offset = sizeof(struct iphdr);
+		next_hdr = skb_network_header(skb) + next_hdr_offset;
+	} else {
+		protocol = ipv6_hdr(skb)->nexthdr;
+		next_hdr_offset = sizeof(struct ipv6hdr);
+		next_hdr = skb_network_header(skb) + next_hdr_offset;
+	}
+
+	switch (protocol) {
+	case IPPROTO_GRE:
+		next_hdr_offset += sizeof(struct gre_base_hdr);
+		if (next_hdr_offset > encap_len)
+			return -EINVAL;
+
+		if (((struct gre_base_hdr *)next_hdr)->flags & GRE_CSUM)
+			return handle_gso_type(skb, SKB_GSO_GRE_CSUM,
+					       encap_len);
+		return handle_gso_type(skb, SKB_GSO_GRE, encap_len);
+
+	case IPPROTO_UDP:
+		next_hdr_offset += sizeof(struct udphdr);
+		if (next_hdr_offset > encap_len)
+			return -EINVAL;
+
+		if (((struct udphdr *)next_hdr)->check)
+			return handle_gso_type(skb, SKB_GSO_UDP_TUNNEL_CSUM,
+					       encap_len);
+		return handle_gso_type(skb, SKB_GSO_UDP_TUNNEL,
+				       encap_len);
+
+	case IPPROTO_IP:
+	case IPPROTO_IPV6:
+		if (ipv4)
+			return handle_gso_type(skb, SKB_GSO_IPXIP4,
+					       encap_len);
+		return handle_gso_type(skb, SKB_GSO_IPXIP6, encap_len);
+
+	default:
+		return -EPROTONOSUPPORT;
+	}
+}
+
+int bpf_lwt_push_ip_encap(struct sk_buff *skb, void *hdr, u32 len,
+			  bool ingress)
+{
+	struct iphdr *iph;
+	bool ipv4;
+	int err;
+
+	if (unlikely(len < sizeof(struct iphdr) ||
+		     len > LWT_BPF_MAX_HEADROOM))
+		return -EINVAL;
+
+	iph = (struct iphdr *)hdr;
+	if (iph->version == 4) {
+		ipv4 = true;
+		if (unlikely(len < iph->ihl * 4))
+			return -EINVAL;
+	} else if (iph->version == 6) {
+		ipv4 = false;
+		if (unlikely(len < sizeof(struct ipv6hdr)))
+			return -EINVAL;
+	} else {
+		return -EINVAL;
+	}
+
+	if (ingress)
+		err = skb_cow_head(skb, len + skb->mac_len);
+	else
+		err = skb_cow_head(skb,
+				   len + LL_RESERVED_SPACE(skb_dst(skb)->dev));
+	if (unlikely(err))
+		return err;
+
+	skb_reset_inner_headers(skb);
+	skb_reset_inner_mac_header(skb);
+	skb_set_inner_protocol(skb, skb->protocol);
+	skb->encapsulation = 1;
+	skb_push(skb, len);
+	if (ingress)
+		skb_postpush_rcsum(skb, iph, len);
+	skb_reset_network_header(skb);
+	memcpy(skb_network_header(skb), hdr, len);
+	bpf_compute_data_pointers(skb);
+	skb_clear_hash(skb);
+
+	if (ipv4) {
+		skb->protocol = htons(ETH_P_IP);
+		iph = ip_hdr(skb);
+		if (!iph->check)
+			iph->check = ip_fast_csum((unsigned char *)iph,
+						  iph->ihl);
+	} else {
+		skb->protocol = htons(ETH_P_IPV6);
+	}
+
+	if (skb_is_gso(skb))
+		return handle_gso_encap(skb, ipv4, len);
+
+	return 0;
+}
 
 static int __init bpf_lwt_init(void)
 {
