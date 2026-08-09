@@ -167,4 +167,6 @@ BTF_SOCK_TYPE_xxx
 extern u32 btf_sock_ids[];
 #endif
 
+extern u32 btf_task_struct_ids[];
+
 #endif

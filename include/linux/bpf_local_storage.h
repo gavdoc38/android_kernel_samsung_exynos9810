@@ -15,6 +15,7 @@
 #include <uapi/linux/btf.h>
 
 struct inode;
+struct task_struct;
 
 #define BPF_LOCAL_STORAGE_CACHE_SIZE	16
 
@@ -161,10 +162,17 @@ bpf_local_storage_update(void *owner, struct bpf_local_storage_map *smap,
 
 #ifdef CONFIG_BPF_SYSCALL
 void bpf_inode_storage_free(struct inode *inode);
+void bpf_task_storage_free(struct task_struct *task);
 extern const struct bpf_func_proto bpf_inode_storage_get_proto;
 extern const struct bpf_func_proto bpf_inode_storage_delete_proto;
+extern const struct bpf_func_proto bpf_task_storage_get_proto;
+extern const struct bpf_func_proto bpf_task_storage_delete_proto;
 #else
 static inline void bpf_inode_storage_free(struct inode *inode)
+{
+}
+
+static inline void bpf_task_storage_free(struct task_struct *task)
 {
 }
 #endif

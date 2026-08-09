@@ -5944,3 +5944,6 @@ const struct bpf_func_proto bpf_btf_find_by_name_kind_proto = {
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_ANYTHING,
 };
+
+BTF_ID_LIST_GLOBAL(btf_task_struct_ids)
+BTF_ID(struct, task_struct)
