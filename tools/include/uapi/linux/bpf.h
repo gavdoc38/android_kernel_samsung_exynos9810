@@ -1337,7 +1337,7 @@ union bpf_attr {
  *	Description
  *		This helper is used in programs implementing policies at the
  *		skb socket level. If the sk_buff *skb* is allowed to pass (i.e.
- *		if the verdeict eBPF program returns **SK_PASS**), redirect it
+ *		if the verdict eBPF program returns **SK_PASS**), redirect it
  *		to the socket referenced by *map* (of type
  *		**BPF_MAP_TYPE_SOCKHASH**) using hash *key*. Both ingress and
  *		egress interfaces can be used for redirection. The
@@ -1379,63 +1379,84 @@ union bpf_attr {
  *		request in the socket buffer.
  *	Return
  *		0 on success, or a negative error in case of failure.
- * int bpf_ringbuf_output(void *ringbuf, void *data, u64 size, u64 flags)
- * 	Description
- * 		Copy *size* bytes from *data* into a ring buffer *ringbuf*.
- * 		If BPF_RB_NO_WAKEUP is specified in *flags*, no notification of
- * 		new data availability is sent.
- * 		IF BPF_RB_FORCE_WAKEUP is specified in *flags*, notification of
- * 		new data availability is sent unconditionally.
- * 	Return
- * 		0, on success;
- * 		< 0, on error.
+ *
+ * long bpf_ringbuf_output(void *ringbuf, void *data, u64 size, u64 flags)
+ *	Description
+ *		Copy *size* bytes from *data* into a ring buffer *ringbuf*.
+ *		If **BPF_RB_NO_WAKEUP** is specified in *flags*, no notification
+ *		of new data availability is sent.
+ *		If **BPF_RB_FORCE_WAKEUP** is specified in *flags*, notification
+ *		of new data availability is sent unconditionally.
+ *		If **0** is specified in *flags*, an adaptive notification
+ *		of new data availability is sent.
+ *
+ *		An adaptive notification is a notification sent whenever the
+ *		user-space process has caught up and consumed all available
+ *		payloads. If the user-space process is still processing a
+ *		previous payload, no notification is needed because it will
+ *		process the newly added payload automatically.
+ *	Return
+ *		0 on success, or a negative error in case of failure.
  *
  * void *bpf_ringbuf_reserve(void *ringbuf, u64 size, u64 flags)
- * 	Description
- * 		Reserve *size* bytes of payload in a ring buffer *ringbuf*.
- * 	Return
- * 		Valid pointer with *size* bytes of memory available; NULL,
- * 		otherwise.
+ *	Description
+ *		Reserve *size* bytes of payload in a ring buffer *ringbuf*.
+ *		*flags* must be 0.
+ *	Return
+ *		Valid pointer with *size* bytes of memory available; NULL,
+ *		otherwise.
  *
  * void bpf_ringbuf_submit(void *data, u64 flags)
- * 	Description
- * 		Submit reserved ring buffer sample, pointed to by *data*.
- * 		If BPF_RB_NO_WAKEUP is specified in *flags*, no notification of
- * 		new data availability is sent.
- * 		IF BPF_RB_FORCE_WAKEUP is specified in *flags*, notification of
- * 		new data availability is sent unconditionally.
- * 	Return
- * 		Nothing. Always succeeds.
+ *	Description
+ *		Submit reserved ring buffer sample, pointed to by *data*.
+ *		If **BPF_RB_NO_WAKEUP** is specified in *flags*, no notification
+ *		of new data availability is sent.
+ *		If **BPF_RB_FORCE_WAKEUP** is specified in *flags*, notification
+ *		of new data availability is sent unconditionally.
+ *		If **0** is specified in *flags*, an adaptive notification
+ *		of new data availability is sent.
+ *
+ *		See **bpf_ringbuf_output**\ () for the definition of adaptive
+ *		notification.
+ *	Return
+ *		Nothing. Always succeeds.
  *
  * void bpf_ringbuf_discard(void *data, u64 flags)
- * 	Description
- * 		Discard reserved ring buffer sample, pointed to by *data*.
- * 		If BPF_RB_NO_WAKEUP is specified in *flags*, no notification of
- * 		new data availability is sent.
- * 		IF BPF_RB_FORCE_WAKEUP is specified in *flags*, notification of
- * 		new data availability is sent unconditionally.
- * 	Return
- * 		Nothing. Always succeeds.
+ *	Description
+ *		Discard reserved ring buffer sample, pointed to by *data*.
+ *		If **BPF_RB_NO_WAKEUP** is specified in *flags*, no notification
+ *		of new data availability is sent.
+ *		If **BPF_RB_FORCE_WAKEUP** is specified in *flags*, notification
+ *		of new data availability is sent unconditionally.
+ *		If **0** is specified in *flags*, an adaptive notification
+ *		of new data availability is sent.
+ *
+ *		See **bpf_ringbuf_output**\ () for the definition of adaptive
+ *		notification.
+ *	Return
+ *		Nothing. Always succeeds.
  *
  * u64 bpf_ringbuf_query(void *ringbuf, u64 flags)
  *	Description
  *		Query various characteristics of provided ring buffer. What
  *		exactly is queries is determined by *flags*:
- *		  - BPF_RB_AVAIL_DATA - amount of data not yet consumed;
- *		  - BPF_RB_RING_SIZE - the size of ring buffer;
- *		  - BPF_RB_CONS_POS - consumer position (can wrap around);
- *		  - BPF_RB_PROD_POS - producer(s) position (can wrap around);
- *		Data returned is just a momentary snapshots of actual values
+ *
+ *		* **BPF_RB_AVAIL_DATA**: Amount of data not yet consumed.
+ *		* **BPF_RB_RING_SIZE**: The size of ring buffer.
+ *		* **BPF_RB_CONS_POS**: Consumer position (can wrap around).
+ *		* **BPF_RB_PROD_POS**: Producer(s) position (can wrap around).
+ *
+ *		Data returned is just a momentary snapshot of actual values
  *		and could be inaccurate, so this facility should be used to
  *		power heuristics and for reporting, not to make 100% correct
  *		calculation.
  *	Return
- *		Requested value, or 0, if flags are not recognized.
+ *		Requested value, or 0, if *flags* are not recognized.
  *
  * long bpf_d_path(struct path *path, char *buf, u32 sz)
  *	Description
- *		Return full path for given 'struct path' object, which
- *		needs to be the kernel BTF 'path' object. The path is
+ *		Return full path for given **struct path** object, which
+ *		needs to be the kernel BTF *path* object. The path is
  *		returned in the provided buffer *buf* of size *sz* and
  *		is zero terminated.
  *
@@ -1623,12 +1644,12 @@ union bpf_attr {
  * long bpf_load_hdr_opt(struct bpf_sock_ops *skops, void *searchby_res, u32 len, u64 flags)
  *	Description
  *		Load header option.  Support reading a particular TCP header
- *		option for bpf program (BPF_PROG_TYPE_SOCK_OPS).
+ *		option for bpf program (**BPF_PROG_TYPE_SOCK_OPS**).
  *
  *		If *flags* is 0, it will search the option from the
- *		sock_ops->skb_data.  The comment in "struct bpf_sock_ops"
+ *		*skops*\ **->skb_data**.  The comment in **struct bpf_sock_ops**
  *		has details on what skb_data contains under different
- *		sock_ops->op.
+ *		*skops*\ **->op**.
  *
  *		The first byte of the *searchby_res* specifies the
  *		kind that it wants to search.
@@ -1648,7 +1669,7 @@ union bpf_attr {
  *		[ 254, 4, 0xeB, 0x9F, 0, 0, .... 0 ].
  *
  *		To search for the standard window scale option (3),
- *		the searchby_res should be [ 3, 0, 0, .... 0 ].
+ *		the *searchby_res* should be [ 3, 0, 0, .... 0 ].
  *		Note, kind-length must be 0 for regular option.
  *
  *		Searching for No-Op (0) and End-of-Option-List (1) are
@@ -1658,27 +1679,30 @@ union bpf_attr {
  *		of a header option.
  *
  *		Supported flags:
+ *
  *		* **BPF_LOAD_HDR_OPT_TCP_SYN** to search from the
  *		  saved_syn packet or the just-received syn packet.
  *
  *	Return
- *		>0 when found, the header option is copied to *searchby_res*.
- *		The return value is the total length copied.
+ *		> 0 when found, the header option is copied to *searchby_res*.
+ *		The return value is the total length copied. On failure, a
+ *		negative error code is returned:
  *
- *		**-EINVAL** If param is invalid
+ *		**-EINVAL** if a parameter is invalid.
  *
- *		**-ENOMSG** The option is not found
+ *		**-ENOMSG** if the option is not found.
  *
- *		**-ENOENT** No syn packet available when
- *			    **BPF_LOAD_HDR_OPT_TCP_SYN** is used
+ *		**-ENOENT** if no syn packet is available when
+ *		**BPF_LOAD_HDR_OPT_TCP_SYN** is used.
  *
- *		**-ENOSPC** Not enough space.  Only *len* number of
- *			    bytes are copied.
+ *		**-ENOSPC** if there is not enough space.  Only *len* number of
+ *		bytes are copied.
  *
- *		**-EFAULT** Cannot parse the header options in the packet
+ *		**-EFAULT** on failure to parse the header options in the
+ *		packet.
  *
- *		**-EPERM** This helper cannot be used under the
- *			   current sock_ops->op.
+ *		**-EPERM** if the helper cannot be used under the current
+ *		*skops*\ **->op**.
  *
  * long bpf_store_hdr_opt(struct bpf_sock_ops *skops, const void *from, u32 len, u64 flags)
  *	Description
@@ -1696,44 +1720,44 @@ union bpf_attr {
  *		by searching the same option in the outgoing skb.
  *
  *		This helper can only be called during
- *		BPF_SOCK_OPS_WRITE_HDR_OPT_CB.
+ *		**BPF_SOCK_OPS_WRITE_HDR_OPT_CB**.
  *
  *	Return
  *		0 on success, or negative error in case of failure:
  *
- *		**-EINVAL** If param is invalid
+ *		**-EINVAL** If param is invalid.
  *
- *		**-ENOSPC** Not enough space in the header.
- *			    Nothing has been written
+ *		**-ENOSPC** if there is not enough space in the header.
+ *		Nothing has been written
  *
- *		**-EEXIST** The option has already existed
+ *		**-EEXIST** if the option already exists.
  *
- *		**-EFAULT** Cannot parse the existing header options
+ *		**-EFAULT** on failrue to parse the existing header options.
  *
- *		**-EPERM** This helper cannot be used under the
- *			   current sock_ops->op.
+ *		**-EPERM** if the helper cannot be used under the current
+ *		*skops*\ **->op**.
  *
  * long bpf_reserve_hdr_opt(struct bpf_sock_ops *skops, u32 len, u64 flags)
  *	Description
  *		Reserve *len* bytes for the bpf header option.  The
- *		space will be used by bpf_store_hdr_opt() later in
- *		BPF_SOCK_OPS_WRITE_HDR_OPT_CB.
+ *		space will be used by **bpf_store_hdr_opt**\ () later in
+ *		**BPF_SOCK_OPS_WRITE_HDR_OPT_CB**.
  *
- *		If bpf_reserve_hdr_opt() is called multiple times,
+ *		If **bpf_reserve_hdr_opt**\ () is called multiple times,
  *		the total number of bytes will be reserved.
  *
  *		This helper can only be called during
- *		BPF_SOCK_OPS_HDR_OPT_LEN_CB.
+ *		**BPF_SOCK_OPS_HDR_OPT_LEN_CB**.
  *
  *	Return
  *		0 on success, or negative error in case of failure:
  *
- *		**-EINVAL** if param is invalid
+ *		**-EINVAL** if a parameter is invalid.
  *
- *		**-ENOSPC** Not enough space in the header.
+ *		**-ENOSPC** if there is not enough space in the header.
  *
- *		**-EPERM** This helper cannot be used under the
- *			   current sock_ops->op.
+ *		**-EPERM** if the helper cannot be used under the current
+ *		*skops*\ **->op**.
  *
  * long bpf_sys_bpf(u32 cmd, void *attr, u32 attr_size)
  * 	Description
