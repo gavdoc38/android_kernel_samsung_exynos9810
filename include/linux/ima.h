@@ -16,6 +16,7 @@ struct linux_binprm;
 #ifdef CONFIG_IMA
 extern int ima_bprm_check(struct linux_binprm *bprm);
 extern int ima_file_check(struct file *file, int mask, int opened);
+int ima_inode_hash(struct inode *inode, char *buf, size_t buf_size);
 extern void ima_file_free(struct file *file);
 extern int ima_file_mmap(struct file *file, unsigned long prot);
 extern int ima_read_file(struct file *file, enum kernel_read_file_id id);
@@ -32,6 +33,12 @@ static inline int ima_bprm_check(struct linux_binprm *bprm)
 static inline int ima_file_check(struct file *file, int mask, int opened)
 {
 	return 0;
+}
+
+static inline int ima_inode_hash(struct inode *inode, char *buf,
+				 size_t buf_size)
+{
+	return -EOPNOTSUPP;
 }
 
 static inline void ima_file_free(struct file *file)

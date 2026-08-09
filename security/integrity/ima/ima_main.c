@@ -357,6 +357,48 @@ int ima_file_check(struct file *file, int mask, int opened)
 EXPORT_SYMBOL_GPL(ima_file_check);
 
 /**
+ * ima_inode_hash - return the stored measurement hash for an inode
+ * @inode: inode whose stored measurement is requested
+ * @buf: buffer in which to return the hash
+ * @buf_size: size of @buf
+ *
+ * Return the hash algorithm on success. Return -EOPNOTSUPP if IMA is not
+ * enabled by policy or no measurement is cached for the inode.
+ */
+int ima_inode_hash(struct inode *inode, char *buf, size_t buf_size)
+{
+	struct integrity_iint_cache *iint;
+	int hash_algo;
+
+	if (!inode)
+		return -EINVAL;
+	if (!ima_policy_flag)
+		return -EOPNOTSUPP;
+
+	iint = integrity_iint_find(inode);
+	if (!iint)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&iint->mutex);
+	if (!iint->ima_hash) {
+		mutex_unlock(&iint->mutex);
+		return -EOPNOTSUPP;
+	}
+
+	if (buf) {
+		size_t copied_size;
+
+		copied_size = min_t(size_t, iint->ima_hash->length, buf_size);
+		memcpy(buf, iint->ima_hash->digest, copied_size);
+	}
+	hash_algo = iint->ima_hash->algo;
+	mutex_unlock(&iint->mutex);
+
+	return hash_algo;
+}
+EXPORT_SYMBOL_GPL(ima_inode_hash);
+
+/**
  * ima_post_path_mknod - mark as a new inode
  * @dentry: newly created dentry
  *

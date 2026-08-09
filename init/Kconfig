@@ -1870,6 +1870,19 @@ config BPF_SYSCALL
 	  Enable the bpf() system call that allows to manipulate eBPF
 	  programs and maps via file descriptors.
 
+config BPF_LSM
+	bool "Enable BPF LSM Instrumentation"
+	depends on BPF_EVENTS
+	depends on BPF_SYSCALL
+	depends on SECURITY
+	depends on BPF_JIT
+	help
+	  Enable BPF programs to instrument Linux Security Module hooks. This
+	  allows dynamic mandatory access control and audit policies to be
+	  implemented without loading a traditional security module.
+
+	  If you are unsure how to answer this question, answer N.
+
 config BPF_JIT_ALWAYS_ON
 	bool "Permanently enable BPF JIT and remove BPF interpreter"
 	depends on BPF_SYSCALL && HAVE_EBPF_JIT && BPF_JIT

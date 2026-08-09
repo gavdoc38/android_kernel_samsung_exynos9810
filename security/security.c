@@ -12,6 +12,7 @@
  */
 
 #include <linux/bpf.h>
+#include <linux/binfmts.h>
 #include <linux/capability.h>
 #include <linux/dcache.h>
 #include <linux/module.h>
@@ -283,7 +284,8 @@ void security_bprm_committed_creds(struct linux_binprm *bprm)
 
 int security_bprm_secureexec(struct linux_binprm *bprm)
 {
-	return call_int_hook(bprm_secureexec, 0, bprm);
+	return bprm->secureexec ||
+	       call_int_hook(bprm_secureexec, 0, bprm);
 }
 
 int security_sb_alloc(struct super_block *sb)

@@ -1962,6 +1962,7 @@ bpf_prog_load_check_attach(enum bpf_prog_type prog_type,
 		switch (prog_type) {
 		case BPF_PROG_TYPE_TRACING:
 		case BPF_PROG_TYPE_EXT:
+		case BPF_PROG_TYPE_LSM:
 			break;
 		default:
 			return -EINVAL;
@@ -2504,13 +2505,20 @@ static int bpf_tracing_prog_attach(struct bpf_prog *prog,
 	switch (prog->type) {
 	case BPF_PROG_TYPE_TRACING:
 		if (prog->expected_attach_type != BPF_TRACE_FENTRY &&
-		    prog->expected_attach_type != BPF_TRACE_FEXIT) {
+		    prog->expected_attach_type != BPF_TRACE_FEXIT &&
+		    prog->expected_attach_type != BPF_MODIFY_RETURN) {
 			err = -EINVAL;
 			goto out_put_prog;
 		}
 		break;
 	case BPF_PROG_TYPE_EXT:
 		if (prog->expected_attach_type != 0) {
+			err = -EINVAL;
+			goto out_put_prog;
+		}
+		break;
+	case BPF_PROG_TYPE_LSM:
+		if (prog->expected_attach_type != BPF_LSM_MAC) {
 			err = -EINVAL;
 			goto out_put_prog;
 		}
@@ -2550,7 +2558,8 @@ static int bpf_tracing_prog_attach(struct bpf_prog *prog,
 	mutex_lock(&prog->aux->dst_mutex);
 	if (!prog->aux->dst_trampoline && !tgt_prog) {
 		/* vmlinux-only re-attach; module BTF is intentionally absent. */
-		if (prog->type != BPF_PROG_TYPE_TRACING) {
+		if (prog->type != BPF_PROG_TYPE_TRACING &&
+		    prog->type != BPF_PROG_TYPE_LSM) {
 			err = -EINVAL;
 			goto out_unlock;
 		}
@@ -2782,13 +2791,15 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 	if (prog->type != BPF_PROG_TYPE_RAW_TRACEPOINT &&
 	    prog->type != BPF_PROG_TYPE_TRACING &&
 	    prog->type != BPF_PROG_TYPE_EXT &&
+	    prog->type != BPF_PROG_TYPE_LSM &&
 	    prog->type != BPF_PROG_TYPE_RAW_TRACEPOINT_WRITABLE) {
 		err = -EINVAL;
 		goto out_put_prog;
 	}
 
 	if (prog->type == BPF_PROG_TYPE_TRACING ||
-	    prog->type == BPF_PROG_TYPE_EXT) {
+	    prog->type == BPF_PROG_TYPE_EXT ||
+	    prog->type == BPF_PROG_TYPE_LSM) {
 		if (attr->raw_tracepoint.name) {
 			/* The attach point for this category of programs should
 			 * be specified through btf_id during program load.
@@ -2899,6 +2910,8 @@ attach_type_to_prog_type(enum bpf_attach_type attach_type)
 		return BPF_PROG_TYPE_CGROUP_SOCKOPT;
 	case BPF_TRACE_ITER:
 		return BPF_PROG_TYPE_TRACING;
+	case BPF_LSM_MAC:
+		return BPF_PROG_TYPE_LSM;
 	default:
 		return BPF_PROG_TYPE_UNSPEC;
 	}
@@ -3932,7 +3945,9 @@ static int tracing_bpf_link_attach(const union bpf_attr *attr, bpfptr_t uattr,
 		return -EINVAL;
 	if (prog->expected_attach_type == BPF_TRACE_ITER)
 		return bpf_iter_link_attach(attr, uattr, prog);
-	if (prog->type == BPF_PROG_TYPE_EXT)
+	if (prog->type == BPF_PROG_TYPE_EXT ||
+	    prog->type == BPF_PROG_TYPE_TRACING ||
+	    prog->type == BPF_PROG_TYPE_LSM)
 		return bpf_tracing_prog_attach(prog,
 					       attr->link_create.target_fd,
 					       attr->link_create.target_btf_id);
@@ -4001,6 +4016,7 @@ static int link_create(const union bpf_attr *attr, bpfptr_t uattr)
 		break;
 #endif
 	case BPF_PROG_TYPE_TRACING:
+	case BPF_PROG_TYPE_LSM:
 		ret = tracing_bpf_link_attach(attr, uattr, prog);
 		break;
 	case BPF_PROG_TYPE_FLOW_DISSECTOR:

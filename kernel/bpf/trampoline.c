@@ -2,6 +2,7 @@
 /* Copyright (c) 2019 Facebook */
 #include <linux/hash.h>
 #include <linux/bpf.h>
+#include <linux/btf.h>
 #include <linux/filter.h>
 
 /* dummy _ops. The verifier will operate on target program's ops. */
@@ -79,13 +80,14 @@ static int bpf_trampoline_update(struct bpf_trampoline *tr)
 	struct bpf_prog *progs_to_run[BPF_MAX_TRAMP_PROGS];
 	int fentry_cnt = tr->progs_cnt[BPF_TRAMP_FENTRY];
 	int fexit_cnt = tr->progs_cnt[BPF_TRAMP_FEXIT];
-	struct bpf_prog **progs, **fentry, **fexit;
+	int mod_ret_cnt = tr->progs_cnt[BPF_TRAMP_MODIFY_RETURN];
+	struct bpf_prog **progs, **fentry, **mod_ret, **fexit;
 	u32 flags = BPF_TRAMP_F_RESTORE_REGS;
 	struct bpf_prog_aux *aux;
 	bool ip_arg = false;
 	int err;
 
-	if (fentry_cnt + fexit_cnt == 0) {
+	if (fentry_cnt + mod_ret_cnt + fexit_cnt == 0) {
 		err = bpf_arch_text_poke(tr->func.addr, BPF_MOD_CALL,
 					 old_image, NULL);
 		tr->selector = 0;
@@ -99,6 +101,14 @@ static int bpf_trampoline_update(struct bpf_trampoline *tr)
 		*progs++ = aux->prog;
 	}
 
+	mod_ret = progs;
+	hlist_for_each_entry(aux,
+			     &tr->progs_hlist[BPF_TRAMP_MODIFY_RETURN],
+			     tramp_hlist) {
+		ip_arg |= aux->prog->call_get_func_ip;
+		*progs++ = aux->prog;
+	}
+
 	fexit = progs;
 	hlist_for_each_entry(aux, &tr->progs_hlist[BPF_TRAMP_FEXIT],
 			     tramp_hlist) {
@@ -106,13 +116,14 @@ static int bpf_trampoline_update(struct bpf_trampoline *tr)
 		*progs++ = aux->prog;
 	}
 
-	if (fexit_cnt)
+	if (fexit_cnt || mod_ret_cnt)
 		flags = BPF_TRAMP_F_CALL_ORIG | BPF_TRAMP_F_SKIP_FRAME;
 	if (ip_arg)
 		flags |= BPF_TRAMP_F_IP_ARG;
 
 	err = arch_prepare_bpf_trampoline(new_image, &tr->func.model, flags,
 					  fentry, fentry_cnt,
+					  mod_ret, mod_ret_cnt,
 					  fexit, fexit_cnt,
 					  tr->func.addr);
 	if (err)
@@ -133,13 +144,19 @@ out:
 }
 
 static enum bpf_tramp_prog_type
-bpf_attach_type_to_tramp(enum bpf_attach_type type)
+bpf_attach_type_to_tramp(struct bpf_prog *prog)
 {
-	switch (type) {
+	switch (prog->expected_attach_type) {
 	case BPF_TRACE_FENTRY:
 		return BPF_TRAMP_FENTRY;
+	case BPF_MODIFY_RETURN:
+		return BPF_TRAMP_MODIFY_RETURN;
 	case BPF_TRACE_FEXIT:
 		return BPF_TRAMP_FEXIT;
+	case BPF_LSM_MAC:
+		if (!prog->aux->attach_func_proto->type)
+			return BPF_TRAMP_FEXIT;
+		return BPF_TRAMP_MODIFY_RETURN;
 	default:
 		return BPF_TRAMP_REPLACE;
 	}
@@ -152,7 +169,7 @@ int bpf_trampoline_link_prog(struct bpf_prog *prog,
 	int err = 0;
 	int cnt;
 
-	kind = bpf_attach_type_to_tramp(prog->expected_attach_type);
+	kind = bpf_attach_type_to_tramp(prog);
 	mutex_lock(&tr->mutex);
 	if (tr->extension_prog) {
 		/* cannot attach fentry/fexit if extension prog is attached.
@@ -162,7 +179,8 @@ int bpf_trampoline_link_prog(struct bpf_prog *prog,
 		goto out;
 	}
 	cnt = tr->progs_cnt[BPF_TRAMP_FENTRY] +
-	      tr->progs_cnt[BPF_TRAMP_FEXIT];
+	      tr->progs_cnt[BPF_TRAMP_FEXIT] +
+	      tr->progs_cnt[BPF_TRAMP_MODIFY_RETURN];
 	if (kind == BPF_TRAMP_REPLACE) {
 		/* Cannot attach extension if fentry/fexit are in use. */
 		if (cnt) {
@@ -204,7 +222,7 @@ int bpf_trampoline_unlink_prog(struct bpf_prog *prog,
 	enum bpf_tramp_prog_type kind;
 	int err;
 
-	kind = bpf_attach_type_to_tramp(prog->expected_attach_type);
+	kind = bpf_attach_type_to_tramp(prog);
 	mutex_lock(&tr->mutex);
 	if (kind == BPF_TRAMP_REPLACE) {
 		WARN_ON_ONCE(!tr->extension_prog);
@@ -255,6 +273,9 @@ void bpf_trampoline_put(struct bpf_trampoline *tr)
 		goto out;
 	if (WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[BPF_TRAMP_FEXIT])))
 		goto out;
+	if (WARN_ON_ONCE(!hlist_empty(
+			&tr->progs_hlist[BPF_TRAMP_MODIFY_RETURN])))
+		goto out;
 
 	bpf_jit_free_exec(tr->image);
 	hlist_del(&tr->hlist);
@@ -295,6 +316,7 @@ void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start)
 int __weak
 arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m, u32 flags,
 			    struct bpf_prog **fentry_progs, int fentry_cnt,
+			    struct bpf_prog **mod_ret_progs, int mod_ret_cnt,
 			    struct bpf_prog **fexit_progs, int fexit_cnt,
 			    void *orig_call)
 {

@@ -56,6 +56,10 @@ BPF_PROG_TYPE(BPF_PROG_TYPE_FLOW_DISSECTOR, flow_dissector,
 #ifdef CONFIG_BPF_JIT
 BPF_PROG_TYPE(BPF_PROG_TYPE_EXT, bpf_extension,
 	      void *, void *)
+#ifdef CONFIG_BPF_LSM
+BPF_PROG_TYPE(BPF_PROG_TYPE_LSM, lsm,
+	      void *, void *)
+#endif /* CONFIG_BPF_LSM */
 #endif
 
 #ifdef CONFIG_INET

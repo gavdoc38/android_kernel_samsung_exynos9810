@@ -561,7 +561,8 @@ struct bpf_attach_target_info {
 
 int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 				u32 flags, struct bpf_prog **fentry_progs,
-				int fentry_cnt, struct bpf_prog **fexit_progs,
+				int fentry_cnt, struct bpf_prog **mod_ret_progs,
+				int mod_ret_cnt, struct bpf_prog **fexit_progs,
 				int fexit_cnt, void *orig_call);
 u64 notrace __bpf_prog_enter(void);
 void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start);
@@ -569,6 +570,7 @@ void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start);
 enum bpf_tramp_prog_type {
 	BPF_TRAMP_FENTRY,
 	BPF_TRAMP_FEXIT,
+	BPF_TRAMP_MODIFY_RETURN,
 	BPF_TRAMP_MAX,
 	BPF_TRAMP_REPLACE, /* more than MAX */
 };

@@ -199,6 +199,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
 	BPF_PROG_TYPE_TRACING = 26,
 	BPF_PROG_TYPE_EXT = 28,
+	BPF_PROG_TYPE_LSM = 29,
 	BPF_PROG_TYPE_SK_LOOKUP = 30,
 	BPF_PROG_TYPE_SYSCALL = 31, /* a program that can execute syscalls */
 
@@ -236,6 +237,8 @@ enum bpf_attach_type {
 	BPF_TRACE_RAW_TP = 23,
 	BPF_TRACE_FENTRY = 24,
 	BPF_TRACE_FEXIT = 25,
+	BPF_MODIFY_RETURN = 26,
+	BPF_LSM_MAC = 27,
 	BPF_TRACE_ITER = 28,
 	BPF_CGROUP_INET4_GETPEERNAME = 29,
 	BPF_CGROUP_INET6_GETPEERNAME = 30,
@@ -1954,6 +1957,11 @@ enum bpf_func_id {
 #define BPF_LOCAL_STORAGE_GET_F_CREATE	(1ULL << 0)
 /* Kept for source compatibility with the original socket helper. */
 #define BPF_SK_STORAGE_GET_F_CREATE	BPF_LOCAL_STORAGE_GET_F_CREATE
+
+/* Flags for bpf_bprm_opts_set helper. */
+enum {
+	BPF_F_BPRM_SECUREEXEC	= (1ULL << 0),
+};
 
 /* BPF_FUNC_read_branch_records flags. */
 #define BPF_F_GET_BRANCH_RECORDS_SIZE	(1ULL << 0)

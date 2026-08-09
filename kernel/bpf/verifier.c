@@ -37,6 +37,7 @@
 #include <linux/btf.h>
 #include <linux/btf_ids.h>
 #include <linux/bpf_verifier.h>
+#include <linux/bpf_lsm.h>
 #include <linux/filter.h>
 #include <net/netlink.h>
 #include <linux/file.h>
@@ -8228,6 +8229,15 @@ static int check_ld_abs(struct bpf_verifier_env *env, struct bpf_insn *insn)
 	return 0;
 }
 
+static bool is_void_return_prog(const struct bpf_verifier_env *env)
+{
+	const struct bpf_prog *prog = env->prog;
+
+	return prog->type == BPF_PROG_TYPE_LSM &&
+	       prog->aux->attach_func_proto &&
+	       !prog->aux->attach_func_proto->type;
+}
+
 static int check_return_code(struct bpf_verifier_env *env)
 {
 	struct bpf_func_state *frame = cur_func(env);
@@ -8257,6 +8267,8 @@ static int check_return_code(struct bpf_verifier_env *env)
 	 * checks have already rejected unreadable and pointer-valued R0.
 	 */
 	if (frame->subprogno)
+		return 0;
+	if (is_void_return_prog(env))
 		return 0;
 
 	switch (resolve_prog_type(env->prog)) {
@@ -9858,13 +9870,17 @@ static int do_check(struct bpf_verifier_env *env)
 				 * of bpf_exit, which means that program wrote
 				 * something into it earlier
 				 */
-				err = check_reg_arg(env, BPF_REG_0, SRC_OP);
-				if (err)
-					return err;
+				if (!is_void_return_prog(env)) {
+					err = check_reg_arg(env, BPF_REG_0,
+							    SRC_OP);
+					if (err)
+						return err;
 
-				if (is_pointer_value(env, BPF_REG_0)) {
-					verbose(env, "R0 leaks addr as return value\n");
-					return -EACCES;
+					if (is_pointer_value(env, BPF_REG_0)) {
+						verbose(env,
+							"R0 leaks addr as return value\n");
+						return -EACCES;
+					}
 				}
 
 				err = check_return_code(env);
@@ -11623,7 +11639,9 @@ int bpf_check_attach_target(struct bpf_verifier_log *log,
 
 	if (!prog_extension &&
 	    prog->expected_attach_type != BPF_TRACE_FENTRY &&
-	    prog->expected_attach_type != BPF_TRACE_FEXIT)
+	    prog->expected_attach_type != BPF_TRACE_FEXIT &&
+	    prog->expected_attach_type != BPF_MODIFY_RETURN &&
+	    prog->expected_attach_type != BPF_LSM_MAC)
 		return -EINVAL;
 	if (!btf_type_is_func(t)) {
 		bpf_log(log, "attach_btf_id %u is not a function\n", btf_id);
@@ -11688,13 +11706,14 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		return -EINVAL;
 	}
 
-	if (prog->aux->sleepable) {
+	if (prog->aux->sleepable && prog->type != BPF_PROG_TYPE_LSM) {
 		verbose(env,
 			"Sleepable programs are limited to syscall programs on this kernel\n");
 		return -EINVAL;
 	}
 
 	if (prog->type != BPF_PROG_TYPE_TRACING &&
+	    prog->type != BPF_PROG_TYPE_LSM &&
 	    prog->type != BPF_PROG_TYPE_EXT)
 		return 0;
 
@@ -11723,6 +11742,18 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		if (!bpf_iter_prog_supported(prog))
 			return -EINVAL;
 		return 0;
+	}
+
+	if (prog->type == BPF_PROG_TYPE_LSM) {
+		ret = bpf_lsm_verify_prog(&env->log, prog);
+		if (ret < 0)
+			return ret;
+		if (prog->aux->sleepable &&
+		    !bpf_lsm_is_sleepable_hook(btf_id)) {
+			verbose(env, "%s is not sleepable\n",
+				prog->aux->attach_func_name);
+			return -EINVAL;
+		}
 	}
 
 	key = bpf_trampoline_compute_key(tgt_prog, prog->aux->attach_btf,
