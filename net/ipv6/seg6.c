@@ -460,12 +460,16 @@ int __init seg6_init(void)
 	err = seg6_iptunnel_init();
 	if (err)
 		goto out_unregister_pernet;
+
+	err = seg6_local_init();
+	if (err)
+		goto out_unregister_iptun;
 #endif
 
 #ifdef CONFIG_IPV6_SEG6_HMAC
 	err = seg6_hmac_init();
 	if (err)
-		goto out_unregister_iptun;
+		goto out_unregister_local;
 #endif
 
 	pr_info("Segment Routing with IPv6\n");
@@ -473,15 +477,17 @@ int __init seg6_init(void)
 out:
 	return err;
 #ifdef CONFIG_IPV6_SEG6_HMAC
+out_unregister_local:
+#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
+	seg6_local_exit();
+#endif
+#endif
+#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
 out_unregister_iptun:
-#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
 	seg6_iptunnel_exit();
-#endif
-#endif
-#ifdef CONFIG_IPV6_SEG6_LWTUNNEL
 out_unregister_pernet:
-	unregister_pernet_subsys(&ip6_segments_ops);
 #endif
+	unregister_pernet_subsys(&ip6_segments_ops);
 out_unregister_genl:
 	genl_unregister_family(&seg6_genl_family);
 	goto out;
@@ -493,6 +499,7 @@ void seg6_exit(void)
 	seg6_hmac_exit();
 #endif
 #ifdef CONFIG_IPV6_SEG6_LWTUNNEL
+	seg6_local_exit();
 	seg6_iptunnel_exit();
 #endif
 	unregister_pernet_subsys(&ip6_segments_ops);

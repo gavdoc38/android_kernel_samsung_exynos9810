@@ -92,7 +92,7 @@ static void set_tun_src(struct net *net, struct net_device *dev,
 }
 
 /* encapsulate an IPv6 packet within an outer IPv6 header with a given SRH */
-static int seg6_do_srh_encap(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
+int seg6_do_srh_encap(struct sk_buff *skb, struct ipv6_sr_hdr *osrh, int proto)
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct net *net = dev_net(dst->dev);
@@ -118,27 +118,32 @@ static int seg6_do_srh_encap(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 	 * hlim will be decremented in ip6_forward() afterwards and
 	 * decapsulation will overwrite inner hlim with outer hlim
 	 */
-	ip6_flow_hdr(hdr, ip6_tclass(ip6_flowinfo(inner_hdr)),
-		     ip6_flowlabel(inner_hdr));
-	hdr->hop_limit = inner_hdr->hop_limit;
+	if (skb->protocol == htons(ETH_P_IPV6)) {
+		ip6_flow_hdr(hdr, ip6_tclass(ip6_flowinfo(inner_hdr)),
+			     ip6_flowlabel(inner_hdr));
+		hdr->hop_limit = inner_hdr->hop_limit;
+	} else {
+		ip6_flow_hdr(hdr, 0, 0);
+		hdr->hop_limit = ip6_dst_hoplimit(dst);
+	}
 	hdr->nexthdr = NEXTHDR_ROUTING;
 
 	isrh = (void *)hdr + sizeof(*hdr);
 	memcpy(isrh, osrh, hdrlen);
 
-	isrh->nexthdr = NEXTHDR_IPV6;
+	isrh->nexthdr = proto;
 
 	hdr->daddr = isrh->segments[isrh->first_segment];
-	set_tun_src(net, ip6_dst_idev(dst)->dev, &hdr->daddr, &hdr->saddr);
+	set_tun_src(net, dst->dev, &hdr->daddr, &hdr->saddr);
 
 	skb_postpush_rcsum(skb, hdr, tot_len);
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(seg6_do_srh_encap);
 
 /* insert an SRH within an IPv6 packet, just after the IPv6 header */
-#ifdef CONFIG_IPV6_SEG6_INLINE
-static int seg6_do_srh_inline(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
+int seg6_do_srh_inline(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 {
 	struct ipv6hdr *hdr, *oldhdr;
 	struct ipv6_sr_hdr *isrh;
@@ -177,13 +182,13 @@ static int seg6_do_srh_inline(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 
 	return 0;
 }
-#endif
+EXPORT_SYMBOL_GPL(seg6_do_srh_inline);
 
 static int seg6_do_srh(struct sk_buff *skb)
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct seg6_iptunnel_encap *tinfo;
-	int err = 0;
+	int proto, err = 0;
 
 	tinfo = seg6_encap_lwtunnel(dst->lwtstate);
 
@@ -191,16 +196,27 @@ static int seg6_do_srh(struct sk_buff *skb)
 		skb_reset_inner_headers(skb);
 		skb->encapsulation = 1;
 	}
+	skb_set_inner_protocol(skb, skb->protocol);
 
 	switch (tinfo->mode) {
-#ifdef CONFIG_IPV6_SEG6_INLINE
 	case SEG6_IPTUN_MODE_INLINE:
+		if (skb->protocol != htons(ETH_P_IPV6))
+			return -EINVAL;
+
 		err = seg6_do_srh_inline(skb, tinfo->srh);
 		skb_reset_inner_headers(skb);
 		break;
-#endif
 	case SEG6_IPTUN_MODE_ENCAP:
-		err = seg6_do_srh_encap(skb, tinfo->srh);
+		if (skb->protocol == htons(ETH_P_IPV6))
+			proto = IPPROTO_IPV6;
+		else if (skb->protocol == htons(ETH_P_IP))
+			proto = IPPROTO_IPIP;
+		else
+			return -EINVAL;
+
+		err = seg6_do_srh_encap(skb, tinfo->srh, proto);
+		if (!err)
+			skb->protocol = htons(ETH_P_IPV6);
 		break;
 	}
 
@@ -209,8 +225,6 @@ static int seg6_do_srh(struct sk_buff *skb)
 
 	ipv6_hdr(skb)->payload_len = htons(skb->len - sizeof(struct ipv6hdr));
 	skb_set_transport_header(skb, sizeof(struct ipv6hdr));
-
-	skb_set_inner_protocol(skb, skb->protocol);
 
 	return 0;
 }
@@ -348,10 +362,11 @@ static int seg6_build_state(struct net_device *dev, struct nlattr *nla,
 		return -EINVAL;
 
 	switch (tuninfo->mode) {
-#ifdef CONFIG_IPV6_SEG6_INLINE
 	case SEG6_IPTUN_MODE_INLINE:
+		if (family != AF_INET6)
+			return -EINVAL;
+
 		break;
-#endif
 	case SEG6_IPTUN_MODE_ENCAP:
 		break;
 	default:
