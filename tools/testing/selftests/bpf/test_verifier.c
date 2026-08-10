@@ -31,6 +31,7 @@
 #include <linux/btf.h>
 
 #include "bpf_compat_515.h"
+#include "bpf_btf_compat_515.h"
 
 #ifdef HAVE_GENHDR
 # include "autoconf.h"
@@ -909,9 +910,13 @@ static void do_test_fixup(struct bpf_test *test, enum bpf_prog_type prog_type,
 		} while (*fixup_map_ringbuf);
 	}
 
-	/* Android checkpoint: no full libbpf vmlinux-BTF parser yet. */
+	/*
+	 * Linux 5.15.178's standalone verifier corpus contains a kfunc case
+	 * backed by upstream test-only kfuncs.  Those helpers are deliberately
+	 * not added to this production Exynos9810 kernel solely for selftests.
+	 */
 	if (fixup_kfunc_btf_id->kfunc) {
-		printf("SKIP (kfunc BTF-ID fixup needs vmlinux BTF resolver)\n");
+		printf("SKIP (upstream verifier test-only kfuncs are not enabled)\n");
 		skips++;
 		return;
 	}
@@ -1064,9 +1069,19 @@ static void do_test_single(struct bpf_test *test, bool unpriv,
 	attr.prog_flags = pflags;
 
 	if (prog_type == BPF_PROG_TYPE_TRACING && test->kfunc) {
-		printf("SKIP (tracing attach-BTF lookup needs vmlinux BTF resolver)\n");
-		skips++;
-		goto close_fds;
+		int attach_btf_id;
+
+		attach_btf_id =
+			bpf515_find_vmlinux_attach_btf_id(test->kfunc,
+							  attr.expected_attach_type);
+		if (attach_btf_id < 0) {
+			printf("SKIP (vmlinux BTF lookup for '%s' failed: %s)\n",
+			       test->kfunc, strerror(-attach_btf_id));
+			skips++;
+			goto close_fds;
+		}
+
+		attr.attach_btf_id = (__u32)attach_btf_id;
 	}
 
 	fd_prog = bpf_load_program_xattr(&attr, bpf_vlog, sizeof(bpf_vlog));

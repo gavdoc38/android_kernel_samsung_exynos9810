@@ -328,6 +328,26 @@ static inline int bpf_probe_prog_type(enum bpf_prog_type type, __u32 ifindex)
 	attr.insns = bpf515_ptr_to_u64(insns);
 	attr.license = bpf515_ptr_to_u64(license);
 	attr.prog_ifindex = ifindex;
+
+	/*
+	 * Some program types cannot be probed with an unspecified attach type.
+	 * Without this, a perfectly supported kernel returns EINVAL and the
+	 * verifier harness incorrectly reports the type as unsupported.
+	 */
+	switch (type) {
+	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+		attr.expected_attach_type = BPF_CGROUP_INET4_BIND;
+		break;
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+		attr.expected_attach_type = BPF_CGROUP_GETSOCKOPT;
+		break;
+	case BPF_PROG_TYPE_SK_LOOKUP:
+		attr.expected_attach_type = BPF_SK_LOOKUP;
+		break;
+	default:
+		break;
+	}
+
 	fd = bpf515_syscall(BPF_PROG_LOAD, &attr);
 	saved_errno = errno;
 	if (fd >= 0)
