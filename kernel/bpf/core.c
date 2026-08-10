@@ -2169,6 +2169,10 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 	bool jit_needed = IS_ENABLED(CONFIG_BPF_JIT_ALWAYS_ON) ||
 			  bpf_prog_has_kfunc_call(fp);
 
+	/* The verifier already prepared the JIT image for BPF-to-BPF calls. */
+	if (fp->bpf_func)
+		goto finalize;
+
 	bpf_prog_select_func(fp);
 
 	/* eBPF JITs can rewrite the program in case constant
@@ -2197,6 +2201,8 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 		if (*err)
 			return fp;
 	}
+
+finalize:
 	*err = bpf_prog_lock_ro(fp);
 	if (*err)
 		return fp;
