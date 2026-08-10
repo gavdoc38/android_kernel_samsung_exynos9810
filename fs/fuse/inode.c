@@ -171,8 +171,17 @@ static void fuse_evict_inode(struct inode *inode)
 	if (inode->i_sb->s_flags & MS_ACTIVE) {
 		struct fuse_conn *fc = get_fuse_conn(inode);
 		struct fuse_inode *fi = get_fuse_inode(inode);
-		fuse_queue_forget(fc, fi->forget, fi->nodeid, fi->nlookup);
-		fi->forget = NULL;
+
+		/*
+		 * Backing-only FUSE-BPF inodes have no userspace lookup
+		 * reference: nodeid and nlookup both remain zero. Do not
+		 * manufacture a FORGET for an object the daemon never tracked.
+		 */
+		if (fi->nlookup) {
+			fuse_queue_forget(fc, fi->forget, fi->nodeid,
+					  fi->nlookup);
+			fi->forget = NULL;
+		}
 	}
 }
 
