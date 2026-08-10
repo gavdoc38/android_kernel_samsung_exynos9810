@@ -124,7 +124,9 @@ endif
 	# Disable watchdog thread
 	DHDCFLAGS += -DCUSTOM_DHD_WATCHDOG_MS=0
 	# Runtime PM
+ifneq ($(CONFIG_SOC_EXYNOS9810),y)
 	DHDCFLAGS += -DDHD_PCIE_RUNTIMEPM
+endif
 	DHDCFLAGS += -DCHECK_TRAP_ROT
 	# Enable host SFH LLC insertion in Tx pkts
 	DHDCFLAGS += -DHOST_SFH_LLC
