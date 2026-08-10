@@ -545,9 +545,11 @@ ifneq ($(filter install,$(MAKECMDGOALS)),)
 endif
 
 ifeq ($(cc-name),clang)
-ifneq ($(CROSS_COMPILE),)
 CLANG_TRIPLE	?= $(CROSS_COMPILE)
+ifneq ($(CLANG_TRIPLE),)
 CLANG_FLAGS	+= --target=$(notdir $(CLANG_TRIPLE:%-=%))
+endif
+ifneq ($(CROSS_COMPILE),)
 GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
 CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
 GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
