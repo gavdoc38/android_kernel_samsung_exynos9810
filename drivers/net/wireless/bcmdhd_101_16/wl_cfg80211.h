@@ -1906,6 +1906,9 @@ struct bcm_cfg80211 {
 	u32 join_iovar_ver;
 	struct delayed_work ap_work;     /* AP linkup timeout handler */
 	wl_event_idx_t eidx;	/* event state tracker */
+#if defined(WLAN_ACCEL_BOOT)
+	u8 set_ssid_timeout_count;
+#endif /* WLAN_ACCEL_BOOT */
 	u32 halpid;
 #ifdef WL_THERMAL_MITIGATION
 	u32 thermal_mode;

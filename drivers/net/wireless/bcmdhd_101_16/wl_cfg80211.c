@@ -140,6 +140,10 @@ static struct bcm_cfg80211 *g_bcmcfg = NULL;
 u32 wl_dbg_level = WL_DBG_ERR | WL_DBG_P2P_ACTION | WL_DBG_INFO;
 
 #define MAX_WAIT_TIME 1500
+#if defined(WLAN_ACCEL_BOOT)
+/* Tolerate transient connection failures before arming a cold reset. */
+#define SET_SSID_TIMEOUT_FORCE_REG_ON_THRESHOLD 3
+#endif
 #ifdef WLAIBSS_MCHAN
 #define IBSS_IF_NAME "ibss%d"
 #endif /* WLAIBSS_MCHAN */
@@ -16422,6 +16426,9 @@ static s32 __wl_cfg80211_down(struct bcm_cfg80211 *cfg)
 	struct net_device *p2p_net = cfg->p2p_net;
 #endif /* WL_CFG80211 && (WL_ENABLE_P2P_IF || WL_NEWCFG_PRIVCMD_SUPPORT) && !PLATFORM_SLP */
 	dhd_pub_t *dhd =  (dhd_pub_t *)(cfg->pub);
+#if defined(WLAN_ACCEL_BOOT)
+	cfg->set_ssid_timeout_count = 0;
+#endif /* WLAN_ACCEL_BOOT */
 	WL_INFORM_MEM(("cfg80211 down\n"));
 
 	/* Check if cfg80211 interface is already down */
@@ -20789,10 +20796,40 @@ wl_cfg80211_spmk_pmkdb_del_spmk(struct bcm_cfg80211 *cfg, struct cfg80211_pmksa 
 	spmk_list->count--;
 }
 
+#if defined(WLAN_ACCEL_BOOT)
+static void
+wl_cfg80211_track_set_ssid_timeout(struct bcm_cfg80211 *cfg,
+				   struct net_device *ndev, u32 status)
+{
+	if (status != WLC_E_STATUS_TIMEOUT) {
+		cfg->set_ssid_timeout_count = 0;
+		return;
+	}
+
+	if (cfg->set_ssid_timeout_count >=
+			SET_SSID_TIMEOUT_FORCE_REG_ON_THRESHOLD) {
+		return;
+	}
+
+	cfg->set_ssid_timeout_count++;
+	if (cfg->set_ssid_timeout_count <
+			SET_SSID_TIMEOUT_FORCE_REG_ON_THRESHOLD) {
+		return;
+	}
+
+	WL_ERR(("SET_SSID timeout limit reached; arm cold reset\n"));
+	dhd_dev_set_accel_force_reg_on(ndev);
+}
+#endif /* WLAN_ACCEL_BOOT */
+
 static void
 wl_cfg80211_handle_set_ssid_complete(struct bcm_cfg80211 *cfg, wl_assoc_status_t *as,
 		const wl_event_msg_t *event, wl_assoc_state_t assoc_state)
 {
+#if defined(WLAN_ACCEL_BOOT)
+	wl_cfg80211_track_set_ssid_timeout(cfg, as->ndev, as->status);
+#endif /* WLAN_ACCEL_BOOT */
+
 	if (as->status != WLC_E_STATUS_SUCCESS) {
 		struct wl_security *sec = wl_read_prof(cfg, as->ndev, WL_PROF_SEC);
 #ifdef DHD_ENABLE_BIGDATA_LOGGING
