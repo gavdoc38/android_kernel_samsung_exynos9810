@@ -44,7 +44,6 @@
 #define TRY_UMOUNT_DETACH 1 /* used by susfs_try_umount() */
 
 #define DEFAULT_KSU_MNT_ID 500000 /* used by mount->mnt_id */
-#define DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE 1000000 /* used by vfsmount->susfs_mnt_id_backup */
 #define DEFAULT_KSU_MNT_GROUP_ID 5000 /* used by mount->mnt_group_id */
 #define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT 0x80000000 /* used for mounts that are unshared by ksu process */
 
@@ -62,20 +61,10 @@
 #define AS_FLAGS_SUS_MOUNT 34
 #define AS_FLAGS_SUS_KSTAT 35
 #define AS_FLAGS_OPEN_REDIRECT 36
-#define AS_FLAGS_ANDROID_DATA_ROOT_DIR 37
-#define AS_FLAGS_SDCARD_ROOT_DIR 38
 #define AS_FLAGS_SUS_MAP 39
-#define BIT_SUS_PATH BIT(33)
-#define BIT_SUS_MOUNT BIT(34)
-#define BIT_SUS_KSTAT BIT(35)
-#define BIT_OPEN_REDIRECT BIT(36)
-#define BIT_ANDROID_DATA_ROOT_DIR BIT(37)
-#define BIT_ANDROID_SDCARD_ROOT_DIR BIT(38)
-#define BIT_SUS_MAPS BIT(39)
 
 #define ND_STATE_LOOKUP_LAST 32
 #define ND_STATE_OPEN_LAST 64
-#define ND_STATE_LAST_SDCARD_SUS_PATH 128
 #define ND_FLAGS_LOOKUP_LAST		0x2000000
  
 #define MAGIC_MOUNT_WORKDIR "/debug_ramdisk/workdir"
