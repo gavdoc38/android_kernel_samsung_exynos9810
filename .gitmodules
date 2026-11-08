@@ -1,3 +1,6 @@
 [submodule "KernelSU"]
 	path = KernelSU
 	url = https://github.com/gavdoc38/KernelSU.git
+[submodule "fgetpriority"]
+	path = fgetpriority
+	url = https://github.com/gavdoc38/fgetpriority.git

@@ -226,3 +226,5 @@ obj-$(CONFIG_UH)		+= uh/
 obj-$(CONFIG_MPSD)	+= mpsd/
 
 obj-$(CONFIG_KSU) += kernelsu/
+
+obj-$(CONFIG_FGETPRIORITY) += fgetpriority/
